@@ -165,26 +165,41 @@ export class TaskService {
 			const getTasksTool = tools.find(t => 
 				t.name === 'get_tasks' || 
 				t.name === 'getTasks' || 
-				t.name === 'list_tasks' || 
-				t.name === 'listTasks' ||
-				t.name.includes('task')
-			);
+			// Get today's undone tasks
+			const mcpResult = await this.mcpService.executeRequest('ticktick', 'tools/call', {
+				name: 'list_undone_tasks_by_time_query',
+				arguments: { timeQuery: 'today' }
+			}) as { content?: Array<{ type: string; text: string }>; structuredContent?: { result?: any[] }; isError?: boolean };
 
-			if (!getTasksTool) return null;
+			if (mcpResult.isError) {
+				console.error('TickTick MCP Error:', mcpResult.content?.[0]?.text);
+				throw new Error('TickTick returned an error.');
+			}
 
-			const callRes = await this.mcpService.executeRequest('ticktick', 'tools/call', {
-				name: getTasksTool.name,
-				arguments: {}
-			}) as McpToolCallResponse;
+			// We only get undone tasks from this query, so completedCount will be a mock for now
+			// Or we could parse structuredContent.result
+			const tasksData = mcpResult.structuredContent?.result || [];
 
-			const contentBlocks = callRes.content || [];
-			if (contentBlocks.length === 0) return null;
+			const parsedTasks: TaskItem[] = tasksData.map((t: any) => ({
+				text: t.title || 'Untitled',
+				checked: t.status === 2, // 2 is usually completed in ticktick, but these are undone so it's false
+				time: t.start_date || t.due_date || ''
+			}));
 
-			const textContent = contentBlocks[0]?.text || '';
-			if (!textContent) return null;
+			this.cache = {
+				todayCount: parsedTasks.length,
+				completedCount: 0, // Since we only queried undone tasks
+				overdueCount: parsedTasks.filter(t => {
+					if (!t.time) return false;
+					const due = new Date(t.time);
+					return due < new Date() && !t.checked;
+				}).length,
+				tasks: parsedTasks
+			};
 
-			return this.parseTasksFromMcpText(textContent);
-
+			await this.saveToDisk(this.cache);
+			new Notice('TickTick 同步完成！');
+			return this.cache;
 		} catch (e) {
 			console.warn('TickTick MCP Server communication failed or is offline.', e);
 		}
@@ -192,89 +207,6 @@ export class TaskService {
 	}
 
 	private parseTasksFromMcpText(text: string): TaskStats {
-		let todayCount = 0;
-		let completedCount = 0;
-		let overdueCount = 0;
-		let parsedTasks: TaskItem[] = [];
-
-		interface ParseMcpTask {
-			dueDate?: string | number | Date;
-			due?: string | number | Date;
-			date?: string | number | Date;
-			status?: number | string;
-			state?: number | string;
-			completed?: boolean;
-			title?: string;
-			text?: string;
-			name?: string;
-		}
-
-		try {
-			const data = JSON.parse(text) as unknown;
-			let tasks: ParseMcpTask[] = [];
-			
-			if (Array.isArray(data)) {
-				tasks = data as ParseMcpTask[];
-			} else if (data && typeof data === 'object') {
-				const obj = data as Record<string, unknown>;
-				if (Array.isArray(obj.tasks)) {
-					tasks = obj.tasks as ParseMcpTask[];
-				}
-			}
-
-			if (tasks.length > 0) {
-				const todayStart = new Date();
-				todayStart.setHours(0, 0, 0, 0);
-
-				tasks.forEach((task) => {
-					const dueDate = task.dueDate || task.due || task.date;
-					const status = task.status || task.state;
-					const isCompleted = status === 2 || status === 'completed' || task.completed === true;
-
-					if (isCompleted) {
-						completedCount++;
-					}
-
-					if (dueDate) {
-						const taskDate = new Date(dueDate);
-						if (taskDate.getTime() >= todayStart.getTime()) {
-							todayCount++;
-						} else if (!isCompleted) {
-							overdueCount++;
-						}
-					}
-
-					parsedTasks.push({
-						text: task.title || task.text || task.name || '未知任务',
-						checked: isCompleted,
-						time: dueDate ? new Date(dueDate).toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'}) : ''
-					});
-				});
-
-				return { todayCount, completedCount, overdueCount, tasks: parsedTasks };
-			}
-		} catch {
-			// Textual fallback
-			const lines = text.split('\n');
-			lines.forEach(line => {
-				const lower = line.toLowerCase();
-				if (lower.includes('[x]') || lower.includes('completed: true')) {
-					completedCount++;
-				}
-				if (lower.includes('today') || lower.includes('due: 2026') || lower.includes('待办')) {
-					todayCount++;
-				}
-				if (lower.includes('overdue') || lower.includes('逾期')) {
-					overdueCount++;
-				}
-			});
-		}
-
-		return {
-			todayCount: todayCount || 5,
-			completedCount: completedCount || 3,
-			overdueCount: overdueCount || 0,
-			tasks: parsedTasks
-		};
+		return { todayCount: 5, completedCount: 3, overdueCount: 0, tasks: [] };
 	}
 }
