@@ -1900,26 +1900,33 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 		});
 
 		let data: { label: string; count: number; tooltip: string }[] = [];
-		const today = window.moment();
+		let baseDate = window.moment();
+		if (this.statsTab === 'week') {
+			baseDate.add(this.currentDateOffset, 'weeks');
+		} else if (this.statsTab === 'month') {
+			baseDate.add(this.currentDateOffset, 'months');
+		} else if (this.statsTab === 'year') {
+			baseDate.add(this.currentDateOffset, 'years');
+		}
 
 		if (this.statsTab === 'week') {
 			const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
-			const startOfWeek = today.clone().startOf('isoWeek');
+			const startOfWeek = baseDate.clone().startOf('isoWeek');
 			data = weekdays.map((day, i) => {
 				const d = startOfWeek.clone().add(i, 'days');
 				const count = dateCounts.get(d.format('YYYY-MM-DD')) || 0;
-				return { label: day, count, tooltip: `周${day} 新增 ${count} 篇` };
+				return { label: day, count, tooltip: `周${day} (${d.format('MM/DD')}) 新增 ${count} 篇` };
 			});
 		} else if (this.statsTab === 'month') {
-			const daysInMonth = today.daysInMonth();
-			const startOfMonth = today.clone().startOf('month');
+			const daysInMonth = baseDate.daysInMonth();
+			const startOfMonth = baseDate.clone().startOf('month');
 			data = Array.from({ length: daysInMonth }).map((_, i) => {
 				const d = startOfMonth.clone().add(i, 'days');
 				const count = dateCounts.get(d.format('YYYY-MM-DD')) || 0;
-				return { label: String(i + 1), count, tooltip: `${i + 1}号 新增 ${count} 篇` };
+				return { label: String(i + 1), count, tooltip: `${i + 1}号 (${d.format('MM/DD')}) 新增 ${count} 篇` };
 			});
 		} else if (this.statsTab === 'year') {
-			const startOfYear = today.clone().startOf('year');
+			const startOfYear = baseDate.clone().startOf('year');
 			data = Array.from({ length: 12 }).map((_, i) => {
 				const monthStart = startOfYear.clone().add(i, 'months');
 				let monthCount = 0;
@@ -1942,27 +1949,35 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 		}
 
 		const maxCount = Math.max(...data.map(d => d.count), 5);
-		const wrapper = parent.createDiv({ attr: { style: 'position: relative; width: 100%;' } });
+		const wrapper = parent.createDiv({ attr: { style: 'position: relative; width: 100%; min-height: 200px; flex-grow: 1; display: flex; flex-direction: column;' } });
 
 		const grid = wrapper.createDiv({ 
 			attr: { style: 'position: absolute; left: 0; right: 0; top: 10px; bottom: 30px; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; border-bottom: 1px solid var(--background-modifier-border);' } 
 		});
 		grid.createDiv({ attr: { style: 'border-bottom: 1px dashed var(--background-modifier-border); width: 100%; height: 0;' } })
-			.createEl('span', { text: String(maxCount), attr: { style: 'font-size: 9px; color: var(--text-muted); position: absolute; top: 0;' } });
+			.createEl('span', { text: String(maxCount), attr: { style: 'font-size: 9px; color: var(--text-muted); position: absolute; top: -5px;' } });
 		grid.createDiv({ attr: { style: 'border-bottom: 1px dashed var(--background-modifier-border); width: 100%; height: 0;' } })
-			.createEl('span', { text: String(Math.round(maxCount / 2)), attr: { style: 'font-size: 9px; color: var(--text-muted); position: absolute; top: 50%;' } });
+			.createEl('span', { text: String(Math.round(maxCount / 2)), attr: { style: 'font-size: 9px; color: var(--text-muted); position: absolute; top: 50%; transform: translateY(-50%);' } });
 
-		const container = wrapper.createDiv({ cls: 'jarvis-stats-bar-chart-container' });
+		const container = wrapper.createDiv({ 
+			attr: { style: 'display: flex; justify-content: space-around; align-items: flex-end; position: absolute; left: 0; right: 0; top: 10px; bottom: 30px; padding: 0 10px; pointer-events: none;' } 
+		});
+		
 		data.forEach(item => {
-			const col = container.createDiv({ cls: 'jarvis-stats-bar-column' });
-			col.createDiv({ text: item.tooltip, cls: 'jarvis-stats-bar-tooltip' });
-			
-			const pct = (item.count / maxCount) * 85;
-			col.createDiv({ 
-				cls: 'jarvis-stats-bar', 
-				attr: { style: `height: ${pct || 2}%; background-color: var(--color-accent);` } 
+			const col = container.createDiv({ 
+				attr: { style: 'display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; flex-grow: 1; position: relative; pointer-events: auto; padding: 0 2px;' },
+				title: item.tooltip
 			});
-			col.createEl('span', { text: item.label, cls: 'jarvis-stats-bar-label' });
+			
+			const pct = (item.count / maxCount) * 100;
+			col.createDiv({ 
+				attr: { style: `height: ${pct}%; min-height: ${pct > 0 ? 4 : 0}px; width: 100%; max-width: 24px; background-color: var(--interactive-accent); border-radius: 4px 4px 0 0; transition: height 0.3s ease; opacity: 0.8;` } 
+			});
+			
+			col.createEl('span', { 
+				text: item.label, 
+				attr: { style: 'position: absolute; bottom: -20px; font-size: 10px; color: var(--text-muted); white-space: nowrap;' } 
+			});
 		});
 	}
 
