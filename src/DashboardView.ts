@@ -1529,7 +1529,14 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 
 	private renderTodayTasks(parent: Element): void {
 		const todayCard = parent.createDiv({ cls: 'ad-card ad-task-card ad-tech-card' });
-		todayCard.createEl('h3', { text: '今日任务流' , attr: { style: 'margin: 0; text-align: left; align-self: flex-start;' } });
+		const headerContainer = todayCard.createDiv({ attr: { style: 'display: flex; justify-content: space-between; align-items: center;' } });
+		headerContainer.createEl('h3', { text: '今日任务流' , attr: { style: 'margin: 0; text-align: left;' } });
+		const refreshBtn = headerContainer.createEl('button', { attr: { title: '手动同步 TickTick', style: 'background: transparent; box-shadow: none; padding: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-muted); border: none;' } });
+		setIcon(refreshBtn, 'refresh-cw');
+		refreshBtn.addEventListener('click', () => {
+			new Notice('开始同步 TickTick 数据...');
+			this.render(); // Re-render the whole dashboard to update tasks and stats
+		});
 		
 		const taskList = todayCard.createDiv({ cls: 'ad-task-list' });
 		const tasks = [
@@ -1598,8 +1605,36 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 		
 		mcpBtn.addEventListener('click', () => {
 			if (mcpInput.value) {
-				new Notice(`执行 MCP 指令: ${mcpInput.value}`);
+				const toolName = mcpInput.value.trim();
+				new Notice(`执行 MCP 指令: ${toolName}...`);
 				mcpInput.value = '';
+				
+				void (async () => {
+					try {
+						// Using the mcpService from taskService
+						const mcpService = (this.taskService as any).mcpService;
+						const res = await mcpService.executeRequest('ticktick', 'tools/call', {
+							name: toolName,
+							arguments: {}
+						});
+						
+						const contentBlocks = res?.content || [];
+						if (contentBlocks.length > 0) {
+							const textContent = contentBlocks[0]?.text || '';
+							new Notice(`✅ 成功执行 [${toolName}]`);
+							console.log(`TickTick MCP Response for ${toolName}:`, textContent);
+							
+							if (toolName.includes('task') || toolName.includes('sync')) {
+								this.render();
+							}
+						} else {
+							new Notice(`⚠️ [${toolName}] 执行完成，但没有返回内容`);
+						}
+					} catch (e) {
+						new Notice(`❌ [${toolName}] 失败: ${String(e)}`);
+						console.error(`MCP Error for ${toolName}:`, e);
+					}
+				})();
 			}
 		});
 	}
