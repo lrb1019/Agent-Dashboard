@@ -1050,7 +1050,8 @@ export class AgentDashboardView extends ItemView {
 			const info = await this.diaryService.getLastYearNote(baseDate, this.periodicTab);
 			innerDiv.empty();
 
-			if (info) {\n\t\t\t	innerDiv.setAttr('style', 'border: 2px solid var(--text-success); border-radius: 8px; padding: 12px; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;');
+			if (info) {
+				innerDiv.setAttr('style', 'border: 2px solid var(--text-success); border-radius: 8px; padding: 12px; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;');
 				innerDiv.createDiv({ 
 					text: info.path, 
 					attr: { style: 'font-family: var(--font-monospace); font-size: 11px; color: var(--text-muted); word-break: break-all; margin-bottom: 8px;' } 
@@ -1061,6 +1062,7 @@ export class AgentDashboardView extends ItemView {
 					attr: { style: 'font-size: 13px; line-height: 1.6; color: var(--text-normal); padding: 12px; border-radius: 6px; overflow-y: auto;' }
 				});
 			} else {
+				innerDiv.setAttr('style', 'border: 2px dashed var(--background-modifier-border); border-radius: 8px; padding: 12px; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;');
 				innerDiv.createDiv({ 
 					attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0.6; padding: 20px 0;' }
 				}, el => {
