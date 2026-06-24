@@ -643,7 +643,7 @@ export class AgentDashboardView extends ItemView {
 			{ id: 'lint', label: '03 / 巡检', icon: 'shield-alert' },
 			{ id: 'tasks', label: '04 / 待办', icon: 'check-square' },
 			{ id: 'projects', label: '05 / 项目', icon: 'kanban' },
-			{ id: 'stats', label: '06 / 统计', icon: 'bar-chart-2' }
+			
 		];
 
 		mainTabs.forEach(t => {
@@ -670,8 +670,6 @@ export class AgentDashboardView extends ItemView {
 			this.renderTasksDashboard(contentWrapper);
 		} else if (this.activeMainTab === 'projects') {
 			this.renderProjectsDashboard(contentWrapper);
-		} else if (this.activeMainTab === 'stats') {
-			this.renderStatsDashboard(contentWrapper);
 		}
 	}
 
@@ -1551,49 +1549,61 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 	 * 04 / 待办主频道渲染 (TickTick Tasks Dashboard)
 	 * =========================================================================
 	 */
-	private renderTasksDashboard(parent: Element): void {
+		private renderTasksDashboard(parent: Element): void {
 		const wrapper = parent.createDiv({ cls: 'ad-tasks-wrapper' });
-		const grid = wrapper.createDiv({ cls: 'ad-middle-grid', attr: { style: 'grid-template-columns: 1.6fr 1fr;' } });
+		const grid = wrapper.createDiv({ cls: 'ad-middle-grid', attr: { style: 'display: grid; grid-template-columns: 1.6fr 1fr; gap: 20px;' } });
 
 		const leftCol = grid.createDiv({ cls: 'ad-tasks-main-col' });
 		this.renderTodayTasks(leftCol);
 
-		const rightCol = grid.createDiv({ cls: 'ad-tasks-side-col' });
+		const rightCol = grid.createDiv({ cls: 'ad-tasks-side-col', attr: { style: 'display: flex; flex-direction: column; gap: 20px;' } });
 		
-		const progressCard = rightCol.createDiv({ cls: 'ad-card ad-tech-card', attr: { style: 'text-align: center;' } });
-		progressCard.createEl('h3', { text: '今日待办完成率' , attr: { style: 'margin: 0; text-align: left; align-self: flex-start;' } });
-		
-		const ringContainer = progressCard.createDiv({ cls: 'ad-progress-ring-container', attr: { style: 'margin: 15px auto;' } });
-		const svg = ringContainer.createSvg('svg', { cls: 'ad-progress-ring', attr: { width: '120', height: '120' } });
-		svg.createSvg('circle', { cls: 'ad-progress-ring-circle-bg', attr: { r: '45', cx: '60', cy: '60' } });
-		const progressCircle = svg.createSvg('circle', {
-			cls: 'ad-progress-ring-circle',
-			attr: { r: '45', cx: '60', cy: '60', id: 'task-progress-circle' }
-		});
-		const textPercentage = ringContainer.createDiv({ cls: 'ad-progress-ring-text', text: '--%' });
-
-		const statsText = progressCard.createDiv({ text: '加载待办统计中...', attr: { style: 'font-size: 13px; font-weight: 600;' } });
-		const overdueText = progressCard.createDiv({ text: '', attr: { style: 'color: var(--text-error); font-size: 12px; font-weight: bold; margin-top: 6px;' } });
-
 		const stats = this.taskService.getCache();
-		const total = stats.todayCount || 1;
-		const completed = stats.completedCount || 0;
-		const pct = Math.round((completed / total) * 100);
+		
+		// Stats Container - strictly Obsidian style
+		const statsCard = rightCol.createDiv({ cls: 'ad-card ad-tech-card' });
+		statsCard.createEl('h3', { text: '今日效能', attr: { style: 'margin-top: 0; margin-bottom: 16px; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 8px; color: var(--text-normal); font-size: 16px;' } });
+		
+		const statsGrid = statsCard.createDiv({ attr: { style: 'display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px;' } });
+		
+		const createStatBox = (label: string, val: string, sub: string) => {
+			const box = statsGrid.createDiv({ attr: { style: 'background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column;' } });
+			box.createDiv({ text: label, attr: { style: 'font-size: 12px; color: var(--text-muted); margin-bottom: 4px;' } });
+			box.createDiv({ text: val, attr: { style: 'font-size: 24px; font-weight: bold; color: var(--text-normal); font-family: var(--font-monospace);' } });
+			if (sub) box.createDiv({ text: sub, attr: { style: 'font-size: 11px; color: var(--text-faint); margin-top: 4px;' } });
+		};
+		
+		createStatBox('已完成', String(stats.completedCount), '今日任务');
+		createStatBox('待办项', String(stats.todayCount), '今日任务');
+		createStatBox('番茄钟', '28', '本周累计');
+		createStatBox('专注时长', '14.5h', '本周累计');
 
-		const strokeDashoffset = 282.7 - (pct / 100) * 282.7;
-		progressCircle.setAttribute('stroke-dashoffset', String(strokeDashoffset));
-		textPercentage.setText(`${pct}%`);
-
-		statsText.setText(`今日任务已完成: ${completed} / ${total} 项`);
-		if (stats.overdueCount > 0) {
-			overdueText.setText(`注意：当前有 ${stats.overdueCount} 项任务已逾期！`);
-		} else {
-			overdueText.setText('今天没有逾期任务。');
-			overdueText.setCssStyles({ color: 'var(--text-success)' });
-		}
-
-		this.renderTodayHabits(rightCol);
-		this.renderMcpConsole(rightCol);
+		// Mini Chart - pure monochrome obsidian style
+		const chartArea = rightCol.createDiv({ cls: 'ad-card ad-tech-card' });
+		chartArea.createEl('h3', { text: '近 7 日趋势', attr: { style: 'margin-top: 0; margin-bottom: 16px; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 8px; color: var(--text-normal); font-size: 14px;' } });
+		
+		const svgContainer = chartArea.createDiv({ attr: { style: 'width: 100%; height: 120px; position: relative;' } });
+		const svg = svgContainer.createSvg('svg', { attr: { width: '100%', height: '100%', viewBox: '0 0 400 120', preserveAspectRatio: 'none' } });
+		
+		const mockData = [4, 6, 3, 8, 5, 9, 2];
+		const max = 10;
+		const height = 90;
+		const barWidth = 30;
+		const spacing = (400 - (barWidth * 7)) / 6;
+		const days = ['一', '二', '三', '四', '五', '六', '日'];
+		
+		mockData.forEach((val, idx) => {
+			const barHeight = (val / max) * height;
+			const x = idx * (barWidth + spacing);
+			const y = height - barHeight + 10;
+			
+			// Monochrome bar
+			svg.createSvg('rect', { attr: { x, y, width: barWidth, height: barHeight, rx: 2, fill: 'var(--interactive-accent)' } });
+			
+			// Label
+			const textL = svg.createSvg('text', { attr: { x: x + barWidth/2, y: height + 25, fill: 'var(--text-muted)', 'font-size': '11px', 'text-anchor': 'middle' } });
+			textL.textContent = days[idx] || '';
+		});
 	}
 
 	private renderTodayTasks(parent: Element): void {
