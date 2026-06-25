@@ -168,14 +168,27 @@ export class TaskService {
 				
 				if (mcpResult.isError) return null;
 				if (mcpResult.content && Array.isArray(mcpResult.content)) {
-					const textObj = mcpResult.content.find((r: any) => r.type === 'text');
-					if (textObj && textObj.text) {
-						try {
-							return JSON.parse(textObj.text);
-						} catch (e) {
-							console.warn('Agent Dashboard: Failed to parse MCP text result for', name, e);
+					const results: any[] = [];
+					for (const block of mcpResult.content) {
+						if (block.type === 'text' && block.text) {
+							try {
+								const parsed = JSON.parse(block.text);
+								if (Array.isArray(parsed)) {
+									results.push(...parsed);
+								} else if (parsed && !parsed.error) {
+									// In case it returns an error string inside JSON
+									if (typeof parsed.text === 'string' && parsed.text.startsWith('Error')) {
+										console.warn('Agent Dashboard MCP Tool Error:', parsed.text);
+									} else {
+										results.push(parsed);
+									}
+								}
+							} catch (e) {
+								console.warn('Agent Dashboard: Failed to parse MCP text result for', name, e);
+							}
 						}
 					}
+					return results;
 				}
 				return null;
 			};
@@ -188,9 +201,18 @@ export class TaskService {
 			// 2. Fetch all undone tasks for all projects
 			let allUndoneTasks: any[] = [];
 			for (const pid of projectIds) {
-				const projData = await callTool('get_project_with_undone_tasks', { projectId: pid });
-				if (projData && projData.tasks && Array.isArray(projData.tasks)) {
-					allUndoneTasks = allUndoneTasks.concat(projData.tasks);
+				const projData = await callTool('get_project_with_undone_tasks', { project_id: pid });
+				// projData is always a flat array now because of callTool's normalization
+				if (Array.isArray(projData)) {
+					// Pydantic validation means it might return the project object which contains `tasks` list
+					for (const p of projData) {
+						if (p.tasks && Array.isArray(p.tasks)) {
+							allUndoneTasks = allUndoneTasks.concat(p.tasks);
+						} else if (p.id && p.title) {
+							// If the API directly returns a list of tasks
+							allUndoneTasks.push(p);
+						}
+					}
 				}
 			}
 
@@ -211,13 +233,12 @@ export class TaskService {
 
 			// 5. Fetch focuses
 			const focusData = await callTool('get_focuses_by_time', {
-				startTime: startDate.getTime(),
-				endTime: endDate.getTime(),
+				from_time: startDate.getTime(),
+				to_time: endDate.getTime(),
 				type: 0
 			}) || [];
 
 			// Process tasks into TaskStats cache object
-			// Note: We're expanding TaskStats implicitly here to allow habits/focuses, etc.
 			const parsedTasks: any[] = allUndoneTasks.map(t => ({
 				...t,
 				text: t.title || 'Untitled',
