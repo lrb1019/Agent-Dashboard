@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, setIcon } from 'obsidian';
+import { App, Modal, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import AgentDashboardPlugin from './main';
 
 function stringifyHeaderLines(headers: Record<string, string>): string {
@@ -26,9 +26,11 @@ function parseHeaderLines(raw: string): Record<string, string> {
 export interface ClaudianAction {
 	id: string;
 	label: string;
+	description?: string;
 	icon: string;
 	prompt: string;
 	requireInput: boolean;
+	enabled?: boolean;
 	inputPlaceholder?: string;
 }
 
@@ -110,6 +112,127 @@ export const DEFAULT_SETTINGS: AgentDashboardSettings = {
 	heatmapDoubleCellGap: 2
 };
 
+class ClaudianActionEditModal extends Modal {
+	private readonly originalAction: ClaudianAction;
+	private readonly onSaveAction: (action: ClaudianAction) => Promise<void>;
+	private readonly onDeleteAction?: () => Promise<void>;
+
+	constructor(app: App, action: ClaudianAction, onSaveAction: (action: ClaudianAction) => Promise<void>, onDeleteAction?: () => Promise<void>) {
+		super(app);
+		this.originalAction = { ...action };
+		this.onSaveAction = onSaveAction;
+		this.onDeleteAction = onDeleteAction;
+	}
+
+	onOpen(): void {
+		const { contentEl, modalEl } = this;
+		modalEl.addClass('ad-action-modal');
+		contentEl.empty();
+
+		let draft: ClaudianAction = {
+			enabled: true,
+			...this.originalAction
+		};
+
+		contentEl.createEl('h2', { text: 'Edit Smart Action' });
+
+		new Setting(contentEl)
+			.setName('按钮名称')
+			.setDesc('面板中显示的按钮文字')
+			.addText(text => text
+				.setPlaceholder('例如：发芽思考')
+				.setValue(draft.label)
+				.onChange((value) => {
+					draft = { ...draft, label: value };
+				}));
+
+		new Setting(contentEl)
+			.setName('列表描述')
+			.setDesc('显示在外层列表里的一句简短说明')
+			.addText(text => text
+				.setPlaceholder('例如：把碎片灵感发散开，再回库找共鸣')
+				.setValue(draft.description || '')
+				.onChange((value) => {
+					draft = { ...draft, description: value };
+				}));
+
+		new Setting(contentEl)
+			.setName('图标名称')
+			.setDesc('填写 Lucide 图标名称，例如 sprout、book-open、rss')
+			.addText(text => text
+				.setPlaceholder('例如：bot')
+				.setValue(draft.icon)
+				.onChange((value) => {
+					draft = { ...draft, icon: value };
+				}));
+
+		new Setting(contentEl)
+			.setName('启用独立输入框')
+			.setDesc('开启后，这个按钮会出现在下方双列输入区')
+			.addToggle(toggle => toggle
+				.setValue(!!draft.requireInput)
+				.onChange((value) => {
+					draft = {
+						...draft,
+						requireInput: value,
+						inputPlaceholder: value ? (draft.inputPlaceholder || '') : ''
+					};
+				}));
+
+		new Setting(contentEl)
+			.setName('输入框提示词')
+			.setDesc('只在启用独立输入框时生效')
+			.addText(text => text
+				.setPlaceholder('例如：输入一个概念或一句灵感')
+				.setValue(draft.inputPlaceholder || '')
+				.onChange((value) => {
+					draft = { ...draft, inputPlaceholder: value };
+				}));
+
+		new Setting(contentEl)
+			.setName('指令模板')
+			.setDesc('点击后发送给 Claudian 的完整内容，可使用 {{input}}、{{daily_path}}、{{inbox_path}}、{{projects_path}}')
+			.addTextArea(text => {
+				text
+					.setPlaceholder('例如：@skills/query 请帮我检索关于“{{input}}”的内容')
+					.setValue(draft.prompt)
+					.onChange((value) => {
+						draft = { ...draft, prompt: value };
+					});
+				text.inputEl.addClass('ad-action-modal-prompt');
+			});
+
+		const footer = contentEl.createDiv({ cls: 'ad-action-modal-footer' });
+		const leftActions = footer.createDiv({ cls: 'ad-action-modal-footer-left' });
+		const rightActions = footer.createDiv({ cls: 'ad-action-modal-footer-right' });
+		if (this.onDeleteAction) {
+			const deleteBtn = leftActions.createEl('button', { text: 'Delete', cls: 'mod-warning' });
+			deleteBtn.addEventListener('click', () => {
+				void this.onDeleteAction?.().then(() => this.close());
+			});
+		}
+		const cancelBtn = rightActions.createEl('button', { text: 'Cancel' });
+		const saveBtn = rightActions.createEl('button', { text: 'Save', cls: 'mod-cta' });
+
+		cancelBtn.addEventListener('click', () => this.close());
+		saveBtn.addEventListener('click', () => {
+			void this.onSaveAction({
+				...draft,
+				enabled: draft.enabled !== false,
+				label: draft.label.trim() || '新指令',
+				description: (draft.description || '').trim(),
+				icon: draft.icon.trim(),
+				prompt: draft.prompt.trim(),
+				inputPlaceholder: draft.requireInput ? (draft.inputPlaceholder || '').trim() : ''
+			}).then(() => this.close());
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 export class AgentDashboardSettingTab extends PluginSettingTab {
 	plugin: AgentDashboardPlugin;
 	private activeTab: SettingsTabId = 'general';
@@ -140,6 +263,200 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 			attr: { target: '_blank', rel: 'noopener noreferrer' }
 		});
 		note.appendText('。把站点上的图标名填进图标字段即可。');
+	}
+
+	private normalizeAction(action: ClaudianAction): ClaudianAction {
+		return {
+			enabled: true,
+			description: '',
+			inputPlaceholder: '',
+			...action
+		};
+	}
+
+	private getActionSummary(action: ClaudianAction): string {
+		const prompt = action.prompt.replace(/\s+/g, ' ').trim();
+		if (!prompt) return '尚未配置指令模板';
+		return prompt.length > 72 ? `${prompt.slice(0, 72)}...` : prompt;
+	}
+
+	private async saveAction(index: number, nextAction: ClaudianAction): Promise<void> {
+		this.plugin.settings.claudianActions[index] = this.normalizeAction(nextAction);
+		await this.plugin.saveSettings();
+		this.display();
+		this.refreshDashboardView();
+	}
+
+	private renderActionList(sectionContent: HTMLElement): void {
+		const actions = (this.plugin.settings.claudianActions || []).map(action => this.normalizeAction(action));
+		this.plugin.settings.claudianActions = actions;
+
+		const header = sectionContent.createDiv({ cls: 'ad-actions-toolbar' });
+		header.createEl('h3', { text: '指令列表', cls: 'ad-actions-toolbar-title' });
+		const addBtn = header.createEl('button', { text: '+', cls: 'ad-actions-toolbar-add' });
+		addBtn.addEventListener('click', async () => {
+			this.plugin.settings.claudianActions.push({
+				id: `action-${Date.now()}`,
+				label: '新指令',
+				description: '',
+				icon: 'bot',
+				prompt: '',
+				requireInput: false,
+				enabled: true,
+				inputPlaceholder: ''
+			});
+			await this.plugin.saveSettings();
+			this.display();
+			this.refreshDashboardView();
+		});
+
+		const list = sectionContent.createDiv({ cls: 'ad-actions-list' });
+
+		actions.forEach((action, index) => {
+			const row = list.createDiv({ cls: 'ad-actions-list-row' });
+			const main = row.createDiv({ cls: 'ad-actions-list-main' });
+			const iconWrap = main.createDiv({ cls: 'ad-actions-list-icon' });
+			setIcon(iconWrap, action.icon || 'bot');
+
+			const textWrap = main.createDiv({ cls: 'ad-actions-list-text' });
+			textWrap.createDiv({ text: action.label || `指令 ${index + 1}`, cls: 'ad-actions-list-title' });
+			textWrap.createDiv({
+				text: `${action.requireInput ? '带输入框' : '纯按钮'} · ${this.getActionSummary(action)}`,
+				cls: 'ad-actions-list-desc'
+			});
+
+			const controls = row.createDiv({ cls: 'ad-actions-list-controls' });
+			const statusWrap = controls.createDiv({ cls: 'ad-actions-list-status' });
+			statusWrap.createSpan({ text: action.enabled !== false ? '启用' : '关闭' });
+			new Setting(statusWrap)
+				.addToggle(toggle => toggle
+					.setValue(action.enabled !== false)
+					.onChange(async (value) => {
+						await this.saveAction(index, { ...action, enabled: value });
+					}));
+
+			const editBtn = controls.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': '编辑指令' } });
+			setIcon(editBtn, 'pencil');
+			editBtn.addEventListener('click', () => {
+				new ClaudianActionEditModal(this.app, action, async (nextAction) => {
+					await this.saveAction(index, nextAction);
+				}).open();
+			});
+
+			const deleteBtn = controls.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': '删除指令' } });
+			setIcon(deleteBtn, 'trash-2');
+			deleteBtn.addEventListener('click', async () => {
+				this.plugin.settings.claudianActions.splice(index, 1);
+				await this.plugin.saveSettings();
+				this.display();
+				this.refreshDashboardView();
+			});
+		});
+	}
+
+	private renderActionListCompact(sectionContent: HTMLElement): void {
+		const actions = (this.plugin.settings.claudianActions || []).map(action => this.normalizeAction(action));
+		this.plugin.settings.claudianActions = actions;
+
+		const header = sectionContent.createDiv({ cls: 'ad-actions-toolbar' });
+		header.createEl('h3', { text: '指令列表', cls: 'ad-actions-toolbar-title' });
+		const addBtn = header.createEl('button', { text: '+', cls: 'ad-actions-toolbar-add' });
+		addBtn.addEventListener('click', async () => {
+			this.plugin.settings.claudianActions.push({
+				id: `action-${Date.now()}`,
+				label: '新指令',
+				description: '',
+				icon: 'bot',
+				prompt: '',
+				requireInput: false,
+				enabled: true,
+				inputPlaceholder: ''
+			});
+			await this.plugin.saveSettings();
+			this.display();
+			this.refreshDashboardView();
+		});
+
+		const list = sectionContent.createDiv({ cls: 'ad-actions-compact-list' });
+		actions.forEach((action, index) => {
+			const row = list.createDiv({ cls: 'ad-actions-compact-row' });
+
+			const left = row.createDiv({ cls: 'ad-actions-compact-main' });
+			const iconWrap = left.createDiv({ cls: 'ad-actions-compact-icon' });
+			setIcon(iconWrap, action.icon || 'bot');
+
+			const textWrap = left.createDiv({ cls: 'ad-actions-compact-text' });
+			textWrap.createDiv({ text: action.label || `指令 ${index + 1}`, cls: 'ad-actions-compact-title' });
+			textWrap.createDiv({
+				text: (action.description || '').trim() || (action.requireInput ? '带输入框的智能指令' : '纯按钮智能指令'),
+				cls: 'ad-actions-compact-desc'
+			});
+
+			const right = row.createDiv({ cls: 'ad-actions-compact-controls' });
+			const editBtn = right.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': '编辑指令' } });
+			setIcon(editBtn, 'pencil');
+			editBtn.addEventListener('click', () => {
+				new ClaudianActionEditModal(
+					this.app,
+					action,
+					async (nextAction) => {
+						await this.saveAction(index, nextAction);
+					},
+					async () => {
+						this.plugin.settings.claudianActions.splice(index, 1);
+						await this.plugin.saveSettings();
+						this.display();
+						this.refreshDashboardView();
+					}
+				).open();
+			});
+
+			const toggleBtn = right.createEl('button', {
+				cls: 'clickable-icon',
+				attr: { 'aria-label': action.enabled !== false ? '关闭指令' : '启用指令' }
+			});
+			setIcon(toggleBtn, action.enabled !== false ? 'toggle-right' : 'toggle-left');
+			toggleBtn.addEventListener('click', async () => {
+				await this.saveAction(index, { ...action, enabled: !(action.enabled !== false) });
+			});
+		});
+	}
+
+	private renderActionPreview(sectionContent: HTMLElement): void {
+		const enabledActions = (this.plugin.settings.claudianActions || [])
+			.map(action => this.normalizeAction(action))
+			.filter(action => action.enabled !== false);
+		const iconOnlyActions = enabledActions.filter(action => !action.requireInput);
+		const inputActions = enabledActions.filter(action => action.requireInput);
+
+		const previewSection = sectionContent.createDiv({ cls: 'ad-actions-preview-section' });
+		previewSection.createEl('h3', { text: '面板预览', cls: 'ad-actions-toolbar-title' });
+
+		const iconCard = previewSection.createDiv({ cls: 'ad-actions-preview-card' });
+		iconCard.createDiv({ text: '纯按钮区', cls: 'ad-actions-preview-label' });
+		const iconGrid = iconCard.createDiv({ cls: 'ad-actions-preview-grid ad-actions-preview-grid-four' });
+		iconOnlyActions.forEach(action => {
+			const btn = iconGrid.createDiv({ cls: 'ad-actions-preview-button' });
+			const iconWrap = btn.createDiv({ cls: 'ad-actions-preview-button-icon' });
+			setIcon(iconWrap, action.icon || 'bot');
+			btn.createSpan({ text: action.label });
+		});
+
+		const inputCard = previewSection.createDiv({ cls: 'ad-actions-preview-card' });
+		inputCard.createDiv({ text: '输入框区', cls: 'ad-actions-preview-label' });
+		const inputGrid = inputCard.createDiv({ cls: 'ad-actions-preview-grid ad-actions-preview-grid-two' });
+		inputActions.forEach(action => {
+			const row = inputGrid.createDiv({ cls: 'ad-actions-preview-input-row' });
+			row.createEl('input', {
+				type: 'text',
+				placeholder: action.inputPlaceholder || '',
+				attr: { disabled: 'true' }
+			});
+			const btn = row.createDiv({ cls: 'ad-actions-preview-input-button' });
+			const iconWrap = btn.createDiv({ cls: 'ad-actions-preview-button-icon' });
+			setIcon(iconWrap, action.icon || 'bot');
+			btn.createSpan({ text: action.label });
+		});
 	}
 
 	display(): void {
@@ -365,6 +682,8 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 				'ad-settings-note-subtle'
 			);
 			this.createLucideNote(sectionContent);
+			this.renderActionListCompact(sectionContent);
+			return;
 
 			this.plugin.settings.claudianActions.forEach((action, index) => {
 				const settingWrap = sectionContent.createDiv({ cls: 'ad-setting-action-item' });

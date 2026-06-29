@@ -2705,13 +2705,15 @@ export class AgentDashboardView extends ItemView {
 		// Bottom Console: claudian Skill Panel
 		const consoleCard = parent.createDiv({ cls: 'ad-card ad-tech-card', attr: { style: 'margin-bottom: 16px; padding: 16px;' } });
 
-		const consoleLayout = consoleCard.createDiv({ cls: 'ad-console-layout', attr: { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 10px;' } });
+		const consoleLayout = consoleCard.createDiv({ cls: 'ad-console-layout', attr: { style: 'display: flex; flex-direction: column; gap: 12px; margin-top: 10px;' } });
 		
 		// Dynamic Claudian Actions from Settings
-		const presetsDiv = consoleLayout.createDiv({ attr: { style: 'display: flex; flex-direction: column; gap: 8px;' } });
-		const presetsGrid = presetsDiv.createDiv({ attr: { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 8px;' } });
+		const presetsCard = consoleLayout.createDiv({ attr: { style: 'border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 12px; background: color-mix(in srgb, var(--background-secondary) 45%, transparent);' } });
+		const presetsDiv = presetsCard.createDiv({ attr: { style: 'display: flex; flex-direction: column; gap: 8px;' } });
+		const presetsGrid = presetsDiv.createDiv({ attr: { style: 'display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;' } });
 		
-		const inputsDiv = consoleLayout.createDiv({ attr: { style: 'display: flex; flex-direction: column; gap: 8px;' } });
+		const inputsCard = consoleLayout.createDiv({ attr: { style: 'border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 12px; background: color-mix(in srgb, var(--background-secondary) 45%, transparent);' } });
+		const inputsDiv = inputsCard.createDiv({ attr: { style: 'display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px;' } });
 
 		const actions = this.plugin.settings.claudianActions || [];
 
@@ -2725,9 +2727,9 @@ export class AgentDashboardView extends ItemView {
 					this.triggerClaudianPrompt(action.prompt);
 				});
 			} else {
-				const group = inputsDiv.createDiv({ attr: { style: 'display: flex; gap: 6px; align-items: center;' } });
-				const input = group.createEl('input', { type: 'text', placeholder: action.inputPlaceholder || '', attr: { style: 'flex-grow: 1; height: 30px; font-size: 12px; padding: 0 8px; border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal);' } });
-				const btn = group.createEl('button', { cls: 'ad-btn ad-btn-primary', attr: { style: 'height: 30px; gap: 4px; font-size: 11px; white-space: nowrap;' } });
+				const group = inputsDiv.createDiv({ attr: { style: 'display: flex; gap: 6px; align-items: center; min-width: 0;' } });
+				const input = group.createEl('input', { type: 'text', placeholder: action.inputPlaceholder || '', attr: { style: 'flex-grow: 1; min-width: 0; height: 30px; font-size: 12px; padding: 0 8px; border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal);' } });
+				const btn = group.createEl('button', { cls: 'ad-btn ad-btn-primary', attr: { style: 'height: 30px; min-width: 96px; justify-content: flex-start; gap: 4px; font-size: 11px; white-space: nowrap; flex-shrink: 0;' } });
 				if (action.icon) setIcon(btn, action.icon);
 				btn.createSpan({ text: action.label });
 				btn.addEventListener('click', () => {

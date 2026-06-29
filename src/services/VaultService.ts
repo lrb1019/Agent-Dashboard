@@ -325,11 +325,22 @@ export class VaultService {
 		return withoutHeadings.trim() === '';
 	}
 
+	private shouldIgnoreForEmptyNoteScan(file: TFile): boolean {
+		const normalizedPath = file.path.replace(/\\/g, '/').toLowerCase();
+		return normalizedPath.startsWith('00templates/')
+			|| normalizedPath.startsWith('00 templates/')
+			|| normalizedPath.startsWith('09books/')
+			|| normalizedPath.startsWith('09 books/');
+	}
+
 	async getEmptyNoteFiles(): Promise<TFile[]> {
 		const emptyFiles: TFile[] = [];
 		try {
 			const files = this.app.vault.getMarkdownFiles();
 			for (const file of files) {
+				if (this.shouldIgnoreForEmptyNoteScan(file)) {
+					continue;
+				}
 				const content = await this.app.vault.read(file);
 				if (this.isStructurallyEmptyMarkdown(content)) {
 					emptyFiles.push(file);

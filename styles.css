@@ -787,6 +787,209 @@ select.dropdown option {
 	background: color-mix(in srgb, var(--background-secondary) 55%, transparent);
 }
 
+.ad-actions-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 8px 0 12px;
+}
+
+.ad-actions-toolbar-title {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 700;
+}
+
+.ad-actions-toolbar-add {
+	width: 32px;
+	height: 32px;
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	cursor: pointer;
+	font-size: 18px;
+	line-height: 1;
+}
+
+.ad-actions-compact-list {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-bottom: 18px;
+}
+
+.ad-actions-compact-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+	padding: 12px 14px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--background-secondary) 58%, transparent);
+}
+
+.ad-actions-compact-main {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	min-width: 0;
+	flex: 1;
+}
+
+.ad-actions-compact-icon {
+	width: 18px;
+	height: 18px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin-top: 2px;
+	color: var(--text-normal);
+}
+
+.ad-actions-compact-icon svg {
+	width: 18px;
+	height: 18px;
+}
+
+.ad-actions-compact-text {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.ad-actions-compact-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.ad-actions-compact-desc {
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--text-muted);
+}
+
+.ad-actions-compact-controls {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.ad-actions-preview-section {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.ad-actions-preview-card {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	padding: 12px;
+	background: color-mix(in srgb, var(--background-secondary) 45%, transparent);
+}
+
+.ad-actions-preview-label {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-muted);
+	margin-bottom: 10px;
+}
+
+.ad-actions-preview-grid {
+	display: grid;
+	gap: 10px 12px;
+}
+
+.ad-actions-preview-grid-four {
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ad-actions-preview-grid-two {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ad-actions-preview-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-primary);
+	font-size: 12px;
+}
+
+.ad-actions-preview-button-icon {
+	width: 16px;
+	height: 16px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.ad-actions-preview-button-icon svg {
+	width: 16px;
+	height: 16px;
+}
+
+.ad-actions-preview-input-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.ad-actions-preview-input-row input {
+	flex: 1;
+	min-width: 0;
+	height: 32px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 0 10px;
+	background: var(--background-primary);
+	color: var(--text-muted);
+}
+
+.ad-actions-preview-input-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 32px;
+	padding: 0 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-primary);
+	font-size: 12px;
+	flex-shrink: 0;
+}
+
+.ad-action-modal .modal-content {
+	padding-bottom: 12px;
+}
+
+.ad-action-modal-prompt {
+	min-height: 180px;
+}
+
+.ad-action-modal-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-top: 18px;
+}
+
+.ad-action-modal-footer-left,
+.ad-action-modal-footer-right {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+
 /* 仓库统计子导航 */
 .ad-stats-header-wrap {
 	display: flex;
