@@ -1,4 +1,4 @@
-import { App, TFile, Notice } from 'obsidian';
+import { App, TFile } from 'obsidian';
 import { McpService } from './McpService';
 import AgentDashboardPlugin from '../main';
 
@@ -66,6 +66,12 @@ export interface TaskStats {
 	projects?: ProjectItem[];
 }
 
+export interface TickTickSyncStatus {
+	state: 'idle' | 'syncing' | 'success' | 'error';
+	lastSyncedAt: number | null;
+	errorMessage: string | null;
+}
+
 interface CachedTaskData {
 	todayCount?: number;
 	completedCount?: number;
@@ -93,6 +99,11 @@ export class TaskService {
 		overdueCount: 0,
 		tasks: []
 	};
+	private syncStatus: TickTickSyncStatus = {
+		state: 'idle',
+		lastSyncedAt: null,
+		errorMessage: null
+	};
 
 	private isInitialized = false;
 
@@ -106,7 +117,18 @@ export class TaskService {
 	 * Returns the instantaneous cached data for 0-latency UI rendering
 	 */
 	getCache(): TaskStats {
+		if (this.syncStatus.state === 'syncing') {
+			this.syncStatus = {
+				state: 'error',
+				lastSyncedAt: this.syncStatus.lastSyncedAt,
+				errorMessage: 'TickTick 同步未返回有效数据'
+			};
+		}
 		return this.cache;
+	}
+
+	getSyncStatus(): TickTickSyncStatus {
+		return this.syncStatus;
 	}
 
 	/**
@@ -130,16 +152,51 @@ export class TaskService {
 	 * Performs the heavy lifting: talks to MCP, parses data, updates memory cache, and writes to disk.
 	 */
 	async syncWithTickTick(): Promise<TaskStats> {
+		const ticktickConfig = this.plugin.settings.ticktickMcp;
+		if (!ticktickConfig.enabled || !ticktickConfig.url.trim()) {
+			this.syncStatus = {
+				state: 'error',
+				lastSyncedAt: this.syncStatus.lastSyncedAt,
+				errorMessage: !ticktickConfig.enabled ? 'TickTick 连接已关闭' : '未配置 TickTick 接口地址'
+			};
+			this.cache = {
+				todayCount: 0,
+				completedCount: 0,
+				overdueCount: 0,
+				tasks: [
+					{ id: 'mock1', text: !ticktickConfig.enabled ? 'TickTick 连接已关闭' : '未配置 TickTick 接口地址', checked: false, time: '' },
+					{ id: 'mock2', text: '请前往插件设置补全 TickTick 连接信息', checked: false, time: '' }
+				]
+			};
+			return this.cache;
+		}
+
+		this.syncStatus = {
+			state: 'syncing',
+			lastSyncedAt: this.syncStatus.lastSyncedAt,
+			errorMessage: null
+		};
+
 		try {
 			// 1. Attempt to query the TickTick MCP Server directly
 			const mcpStats = await this.fetchFromTickTickMcp();
 			if (mcpStats) {
 				this.cache = mcpStats;
 				await this.saveToDisk(mcpStats);
+				this.syncStatus = {
+					state: 'success',
+					lastSyncedAt: Date.now(),
+					errorMessage: null
+				};
 				return this.cache;
 			}
 		} catch (error) {
 			console.error('Failed to sync tasks from MCP:', error);
+			this.syncStatus = {
+				state: 'error',
+				lastSyncedAt: this.syncStatus.lastSyncedAt,
+				errorMessage: error instanceof Error ? error.message : String(error)
+			};
 		}
 
 		// Fallback mock stats if everything offline/unconfigured
@@ -149,8 +206,8 @@ export class TaskService {
 			overdueCount: 1,
 			tasks: [
 				{ id: 'mock1', text: '未连接到 TickTick 数据源', checked: false, time: '' },
-				{ id: 'mock2', text: '缺少 .claude/mcp.json 配置', checked: false, time: '' },
-				{ id: 'mock3', text: '或缺少本地 ticktick-cache.json', checked: false, time: '' }
+				{ id: 'mock2', text: '请检查插件内 TickTick 接口地址与请求头', checked: false, time: '' },
+				{ id: 'mock3', text: '或缺少本地 ticktick-cache.json 缓存', checked: false, time: '' }
 			]
 		};
 		return this.cache;
@@ -175,6 +232,11 @@ export class TaskService {
 					habitCheckins: data.habitCheckins || {},
 					focuses: data.focuses || [],
 					projects: data.projects || []
+				};
+				this.syncStatus = {
+					state: 'success',
+					lastSyncedAt: cacheFile.stat.mtime,
+					errorMessage: null
 				};
 			}
 		} catch (e) {
@@ -213,7 +275,7 @@ export class TaskService {
 	private async fetchFromTickTickMcp(): Promise<TaskStats | null> {
 		try {
 			const callTool = async (name: string, args: Record<string, unknown> = {}): Promise<unknown[] | null> => {
-				const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickServiceName, 'tools/call', {
+				const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickMcp.serviceName, 'tools/call', {
 					name,
 					arguments: args
 				}) as { content?: Array<{ type: string; text: string }>; isError?: boolean };
@@ -390,7 +452,6 @@ export class TaskService {
 
 			this.cache = cacheData;
 			await this.saveToDisk(this.cache);
-			new Notice('TickTick 全量同步完成！');
 			return this.cache;
 		} catch (e) {
 			console.warn('TickTick MCP Server communication failed or is offline.', e);
@@ -408,7 +469,7 @@ export class TaskService {
 				taskObj.startDate = startDate;
 				taskObj.isAllDay = true;
 			}
-			const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickServiceName, 'tools/call', {
+			const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickMcp.serviceName, 'tools/call', {
 				name: 'create_task',
 				arguments: {
 					task: taskObj
@@ -431,7 +492,7 @@ export class TaskService {
 
 	async completeTask(taskObj: TaskItem): Promise<boolean> {
 		try {
-			const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickServiceName, 'tools/call', {
+			const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickMcp.serviceName, 'tools/call', {
 				name: 'update_task',
 				arguments: {
 					task_id: taskObj.id,
@@ -469,7 +530,7 @@ export class TaskService {
 
 	async checkInHabit(habitId: string, stamp: number, isCompleted: boolean): Promise<boolean> {
 		try {
-			const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickServiceName, 'tools/call', {
+			const mcpResult = await this.mcpService.executeRequest(this.plugin.settings.ticktickMcp.serviceName, 'tools/call', {
 				name: 'upsert_habit_checkins',
 				arguments: {
 					habit_id: habitId,

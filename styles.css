@@ -9,6 +9,7 @@
 	margin: 0 auto;
 	padding: 60px 60px 40px 60px;
 	box-sizing: border-box;
+	scrollbar-gutter: stable;
 }
 
 /* 细线圆角框与底部轻微阴影 (参考 jarvis reader) */
@@ -158,9 +159,10 @@
 	height: 24px;
 	background: var(--background-primary);
 }
-.jarvis-stats-date-text {
+.jarvis-stats-header-wrap .jarvis-stats-date-text {
 	font-size: 14px !important;
 	font-weight: 500 !important;
+	line-height: 1 !important;
 	margin-bottom: 0 !important;
 	margin-left: 6px !important;
 	margin-right: 6px !important;
@@ -683,6 +685,37 @@ select.dropdown option {
 
 .ad-settings-section-content {
 	animation: fadeIn 0.3s ease-out;
+}
+
+.ad-settings-note {
+	margin: 0 0 16px;
+	padding: 0 2px;
+	font-size: 12px;
+	line-height: 1.7;
+	color: var(--text-muted);
+}
+
+.ad-settings-note-subtle {
+	margin-top: -6px;
+	color: color-mix(in srgb, var(--text-muted) 88%, var(--text-normal) 12%);
+}
+
+.ad-settings-note-link {
+	color: var(--text-accent);
+	text-decoration: none;
+}
+
+.ad-settings-note-link:hover {
+	color: var(--text-accent-hover);
+	text-decoration: underline;
+}
+
+.ad-setting-action-item {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 12px;
+	margin-bottom: 12px;
+	background: color-mix(in srgb, var(--background-secondary) 55%, transparent);
 }
 
 /* 仓库统计子导航 */

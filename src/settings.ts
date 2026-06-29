@@ -1,6 +1,28 @@
 import { App, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import AgentDashboardPlugin from './main';
 
+function stringifyHeaderLines(headers: Record<string, string>): string {
+	return Object.entries(headers)
+		.map(([key, value]) => `${key}=${value}`)
+		.join('\n');
+}
+
+function parseHeaderLines(raw: string): Record<string, string> {
+	const headers: Record<string, string> = {};
+	for (const line of raw.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		const separatorIndex = trimmed.indexOf('=');
+		if (separatorIndex <= 0) continue;
+		const key = trimmed.slice(0, separatorIndex).trim();
+		const value = trimmed.slice(separatorIndex + 1).trim();
+		if (key) {
+			headers[key] = value;
+		}
+	}
+	return headers;
+}
+
 export interface ClaudianAction {
 	id: string;
 	label: string;
@@ -8,6 +30,14 @@ export interface ClaudianAction {
 	prompt: string;
 	requireInput: boolean;
 	inputPlaceholder?: string;
+}
+
+export interface TickTickMcpConfig {
+	enabled: boolean;
+	serviceName: string;
+	type: 'http';
+	url: string;
+	headers: Record<string, string>;
 }
 
 export interface AgentDashboardSettings {
@@ -23,10 +53,10 @@ export interface AgentDashboardSettings {
 	outputFolder: string;
 	atomicsFolder: string;
 	
-	// MCP & Integration settings (new settings)
+	// Legacy import path for migration / optional fallback
 	mcpConfigPath: string;
+	ticktickMcp: TickTickMcpConfig;
 	ticktickCachePath: string;
-	ticktickServiceName: string;
 	ticktickSyncDebounce: number;
 	
 	// Heatmap & Scale settings (new settings)
@@ -35,6 +65,8 @@ export interface AgentDashboardSettings {
 	heatmapDoubleCellSize: number;
 	heatmapDoubleCellGap: number;
 }
+
+type SettingsTabId = 'general' | 'paths' | 'mcp' | 'actions';
 
 export const DEFAULT_SETTINGS: AgentDashboardSettings = {
 	dashboardTitle: "BYLRB 的智能控制中心",
@@ -63,8 +95,14 @@ export const DEFAULT_SETTINGS: AgentDashboardSettings = {
 	outputFolder: "05 Output",
 	atomicsFolder: "04 Atomics",
 	mcpConfigPath: ".claude/mcp.json",
+	ticktickMcp: {
+		enabled: true,
+		serviceName: "ticktick",
+		type: "http",
+		url: "",
+		headers: {}
+	},
 	ticktickCachePath: "07 Jarvis/ticktick-cache.json",
-	ticktickServiceName: "ticktick",
 	ticktickSyncDebounce: 2000,
 	heatmapCellSize: 12,
 	heatmapCellGap: 3,
@@ -74,11 +112,34 @@ export const DEFAULT_SETTINGS: AgentDashboardSettings = {
 
 export class AgentDashboardSettingTab extends PluginSettingTab {
 	plugin: AgentDashboardPlugin;
-	private activeTab: 'general' | 'paths' | 'mcp' | 'actions' = 'general';
+	private activeTab: SettingsTabId = 'general';
 
 	constructor(app: App, plugin: AgentDashboardPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	private normalizeFolderPath(value: string): string {
+		return value.trim().replace(/^\/+|\/+$/g, '');
+	}
+
+	private createNote(container: HTMLElement, text: string, extraClass?: string): void {
+		container.createEl('p', {
+			text,
+			cls: `ad-settings-note${extraClass ? ` ${extraClass}` : ''}`
+		});
+	}
+
+	private createLucideNote(container: HTMLElement): void {
+		const note = container.createEl('p', { cls: 'ad-settings-note ad-settings-note-subtle' });
+		note.appendText('图标名称来自 ');
+		note.createEl('a', {
+			text: 'Lucide Icons',
+			href: 'https://lucide.dev/icons/',
+			cls: 'ad-settings-note-link',
+			attr: { target: '_blank', rel: 'noopener noreferrer' }
+		});
+		note.appendText('。把站点上的图标名填进图标字段即可。');
 	}
 
 	display(): void {
@@ -88,7 +149,7 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 		// Horizontal tabs menu
 		const tabsContainer = containerEl.createDiv({ cls: 'ad-settings-tabs-container' });
 
-		const createTabBtn = (id: 'general' | 'paths' | 'mcp' | 'actions', label: string, icon: string) => {
+		const createTabBtn = (id: SettingsTabId, label: string, icon: string) => {
 			const btn = tabsContainer.createDiv({
 				cls: `ad-settings-tab-btn ${this.activeTab === id ? 'is-active' : ''}`
 			});
@@ -103,13 +164,18 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 
 		createTabBtn('general', '看板基础设置', 'layout');
 		createTabBtn('paths', '知识库路径', 'folder');
-		createTabBtn('mcp', 'TickTick & MCP', 'cpu');
+		createTabBtn('mcp', 'TickTick 连接', 'cpu');
 		createTabBtn('actions', '智能指令', 'bot');
 
 		// Render active tab content
 		const sectionContent = containerEl.createDiv({ cls: 'ad-settings-section-content' });
 
 		if (this.activeTab === 'general') {
+			this.createNote(
+				sectionContent,
+				'这里只保留真正影响看板显示和数据口径的设置。热力图尺寸这类低频技术参数已固定为默认值，不再放进界面里继续增加噪音。'
+			);
+
 			new Setting(sectionContent)
 				.setName('看板主标题')
 				.setDesc('自定义 dashboard 看板顶部显示的主标题')
@@ -121,182 +187,161 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
-
-			new Setting(sectionContent)
-				.setName('单年热力图方格尺寸')
-				.setDesc('调整单个年份显示时热力图格子的大小 (单位: 像素)')
-				.addSlider(slider => slider
-					.setLimits(8, 20, 1)
-					.setValue(this.plugin.settings.heatmapCellSize)
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						this.plugin.settings.heatmapCellSize = value;
-						await this.plugin.saveSettings();
-						this.refreshDashboardView();
-					}));
-
-			new Setting(sectionContent)
-				.setName('单年热力图方格间距')
-				.setDesc('调整单个年份显示时热力图格子之间的间隙 (单位: 像素)')
-				.addSlider(slider => slider
-					.setLimits(1, 8, 1)
-					.setValue(this.plugin.settings.heatmapCellGap)
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						this.plugin.settings.heatmapCellGap = value;
-						await this.plugin.saveSettings();
-						this.refreshDashboardView();
-					}));
-
-			new Setting(sectionContent)
-				.setName('双年热力图方格尺寸')
-				.setDesc('调整显示两个年份（如前年与今年）时热力图格子的大小 (单位: 像素)')
-				.addSlider(slider => slider
-					.setLimits(6, 16, 1)
-					.setValue(this.plugin.settings.heatmapDoubleCellSize)
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						this.plugin.settings.heatmapDoubleCellSize = value;
-						await this.plugin.saveSettings();
-						this.refreshDashboardView();
-					}));
-
-			new Setting(sectionContent)
-				.setName('双年热力图方格间距')
-				.setDesc('调整显示两个年份时热力图格子之间的间隙 (单位: 像素)')
-				.addSlider(slider => slider
-					.setLimits(1, 6, 1)
-					.setValue(this.plugin.settings.heatmapDoubleCellGap)
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						this.plugin.settings.heatmapDoubleCellGap = value;
-						await this.plugin.saveSettings();
-						this.refreshDashboardView();
-					}));
+			return;
 
 		} else if (this.activeTab === 'paths') {
+			this.createNote(
+				sectionContent,
+				'这里不是随便填路径，而是在定义整个插件的数据口径。日记就是“日记文件夹里的全部内容”；巡检核心就是“原子笔记文件夹里的全部内容”；项目则由项目文件夹和 Base 文件共同决定。'
+			);
+
 			new Setting(sectionContent)
 				.setName('日记文件夹路径')
-				.setDesc('扫描或创建日记时的根目录')
+				.setDesc('该文件夹中的内容都会被视为日记来源。日记统计、首篇日记判断与周期创建都以这里为准。')
 				.addText(text => text
 					.setPlaceholder('例如: 01 Daily')
 					.setValue(this.plugin.settings.dailyNoteFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.dailyNoteFolder = value.trim().replace(/^\/+|\/+$/g, '');
+						this.plugin.settings.dailyNoteFolder = this.normalizeFolderPath(value);
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
 
 			new Setting(sectionContent)
 				.setName('收件箱文件夹路径')
-				.setDesc('扫描待整理（未入库）文件的收件箱目录')
+				.setDesc('用于收件箱积压统计，以及快速分流时的默认来源目录。')
 				.addText(text => text
 					.setPlaceholder('例如: 02 Inbox')
 					.setValue(this.plugin.settings.inboxFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.inboxFolder = value.trim().replace(/^\/+|\/+$/g, '');
+						this.plugin.settings.inboxFolder = this.normalizeFolderPath(value);
+						await this.plugin.saveSettings();
+						this.refreshDashboardView();
+					}));
+
+			new Setting(sectionContent)
+				.setName('巡检核心文件夹路径')
+				.setDesc('孤儿笔记默认只检查这里；死链统计也会优先结合这里一起判断。它本质上就是你的原子笔记主目录。')
+				.addText(text => text
+					.setPlaceholder('例如: 04 Atomics')
+					.setValue(this.plugin.settings.atomicsFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.atomicsFolder = this.normalizeFolderPath(value);
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
 
 			new Setting(sectionContent)
 				.setName('项目管理文件夹路径')
-				.setDesc('扫描并形成项目看板监控的文件夹路径')
+				.setDesc('项目页会结合这个文件夹与下方 Base 文件一起生成项目概览。')
 				.addText(text => text
 					.setPlaceholder('例如: 03 Projects')
 					.setValue(this.plugin.settings.projectsFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.projectsFolder = value;
+						this.plugin.settings.projectsFolder = this.normalizeFolderPath(value);
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
 
 			new Setting(sectionContent)
 				.setName('项目数据库文件 (Base)')
-				.setDesc('Base 文件路径（例如 03 Projects/Projects.base）')
+				.setDesc('项目页读取的 Base 文件路径，例如 03 Projects/Projects.base。')
 				.addText(text => text
 					.setPlaceholder('03 Projects/Projects.base')
 					.setValue(this.plugin.settings.projectBaseFilePath)
 					.onChange(async (value) => {
-						this.plugin.settings.projectBaseFilePath = value;
+						this.plugin.settings.projectBaseFilePath = value.trim();
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
 
 			new Setting(sectionContent)
 				.setName('数据归档文件夹路径')
-				.setDesc('计算占比统计中被归类的已归档目录路径')
+				.setDesc('仓库概览里会把这个目录下的文件归为归档内容。')
 				.addText(text => text
 					.setPlaceholder('例如: 06 Archive')
 					.setValue(this.plugin.settings.archiveFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.archiveFolder = value.trim().replace(/^\/+|\/+$/g, '');
+						this.plugin.settings.archiveFolder = this.normalizeFolderPath(value);
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
 
 			new Setting(sectionContent)
 				.setName('输出成果文件夹路径')
-				.setDesc('计算占比统计中被归类的已输出成果目录路径')
+				.setDesc('仓库概览会将这里归类为输出内容；部分巡检链接来源也会把这里纳入参考。')
 				.addText(text => text
 					.setPlaceholder('例如: 05 Output')
 					.setValue(this.plugin.settings.outputFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.outputFolder = value.trim().replace(/^\/+|\/+$/g, '');
+						this.plugin.settings.outputFolder = this.normalizeFolderPath(value);
 						await this.plugin.saveSettings();
 						this.refreshDashboardView();
 					}));
 
-			new Setting(sectionContent)
-				.setName('原子笔记文件夹路径')
-				.setDesc('核心内容（原子笔记）在库中的存放目录（用于孤儿笔记与空笔记扫描）')
-				.addText(text => text
-					.setPlaceholder('例如: 04 Atomics')
-					.setValue(this.plugin.settings.atomicsFolder)
-					.onChange(async (value) => {
-						this.plugin.settings.atomicsFolder = value.trim().replace(/^\/+|\/+$/g, '');
-						await this.plugin.saveSettings();
-						this.refreshDashboardView();
-					}));
+			this.createNote(
+				sectionContent,
+				'补充说明：空白笔记清理目前仍按全库扫描，而不是只看某一个文件夹。这是为了覆盖“空文件、只有标题、只有属性没有正文”的所有笔记。',
+				'ad-settings-note-subtle'
+			);
 
 		} else if (this.activeTab === 'mcp') {
+			this.createNote(
+				sectionContent,
+				'TickTick 连接现在由本插件独立管理，不再和其他插件共用 MCP 配置文件。这里保留的都是当前真正会影响连接结果的字段。'
+			);
+			this.createNote(
+				sectionContent,
+				'本地缓存文件由插件内部自动读写，不需要再单独暴露给设置页。只有在你明确知道自己要改什么时，才需要动下面的高级字段。',
+				'ad-settings-note-subtle'
+			);
+
 			new Setting(sectionContent)
-				.setName('MCP 配置文件路径')
-				.setDesc('读取本地已连接的智能体 MCP 配置文件路径')
-				.addText(text => text
-					.setPlaceholder('.claude/mcp.json')
-					.setValue(this.plugin.settings.mcpConfigPath)
+				.setName('TickTick 连接启用状态')
+				.setDesc('关闭后，面板将不再尝试请求 TickTick MCP 接口。')
+				.addToggle(toggle => toggle
+					.setValue(this.plugin.settings.ticktickMcp.enabled)
 					.onChange(async (value) => {
-						this.plugin.settings.mcpConfigPath = value.trim();
+						this.plugin.settings.ticktickMcp.enabled = value;
 						await this.plugin.saveSettings();
 					}));
 
 			new Setting(sectionContent)
-				.setName('TickTick 缓存文件路径')
-				.setDesc('存储从 TickTick 抓取的待办与打卡数据的本地 JSON 路径')
+				.setName('TickTick 接口地址')
+				.setDesc('HTTP 类型 MCP 端点地址，例如 https://mcp.ticktick.com')
 				.addText(text => text
-					.setPlaceholder('07 Jarvis/ticktick-cache.json')
-					.setValue(this.plugin.settings.ticktickCachePath)
+					.setPlaceholder('https://mcp.ticktick.com')
+					.setValue(this.plugin.settings.ticktickMcp.url)
 					.onChange(async (value) => {
-						this.plugin.settings.ticktickCachePath = value.trim();
+						this.plugin.settings.ticktickMcp.url = value.trim();
 						await this.plugin.saveSettings();
-						this.refreshDashboardView();
 					}));
 
 			new Setting(sectionContent)
-				.setName('TickTick MCP 服务标识符')
-				.setDesc('MCP 服务器中配置的 TickTick 连接 service 名称')
+				.setName('TickTick 请求头')
+				.setDesc('每行一个 key=value，例如 Authorization=Bearer ...')
+				.addTextArea(text => text
+					.setPlaceholder('Authorization=Bearer ...')
+					.setValue(stringifyHeaderLines(this.plugin.settings.ticktickMcp.headers))
+					.onChange(async (value) => {
+						this.plugin.settings.ticktickMcp.headers = parseHeaderLines(value);
+						await this.plugin.saveSettings();
+					}));
+
+			new Setting(sectionContent)
+				.setName('TickTick 服务标识符')
+				.setDesc('高级项。用于插件内部识别该连接，通常保持 ticktick 即可。')
 				.addText(text => text
 					.setPlaceholder('ticktick')
-					.setValue(this.plugin.settings.ticktickServiceName)
+					.setValue(this.plugin.settings.ticktickMcp.serviceName)
 					.onChange(async (value) => {
-						this.plugin.settings.ticktickServiceName = value.trim();
+						this.plugin.settings.ticktickMcp.serviceName = value.trim() || 'ticktick';
 						await this.plugin.saveSettings();
 					}));
 
 			new Setting(sectionContent)
 				.setName('同步防抖延迟 (毫秒)')
-				.setDesc('打卡后触发 TickTick 同步的防抖等待时长，防止数据丢失')
+				.setDesc('打卡后触发 TickTick 二次同步前的等待时长，避免接口延迟覆盖最新状态。')
 				.addText(text => text
 					.setPlaceholder('2000')
 					.setValue(String(this.plugin.settings.ticktickSyncDebounce))
@@ -307,16 +352,22 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						}
 					}));
+			return;
 
 		} else if (this.activeTab === 'actions') {
-			sectionContent.createEl('p', {
-				text: '自定义底部技能面板的交互按钮。支持动态获取输入框内容（请使用 {{input}} ）。您也可以在指令模板中使用路径变量，例如 {{daily_path}}、{{inbox_path}} 或 {{projects_path}} 会自动替换为上面所设置的文件夹名称。',
-				cls: 'setting-item-description',
-				attr: { style: 'margin-bottom: 16px; padding: 0 10px;' }
-			});
+			this.createNote(
+				sectionContent,
+				'这里配置的是巡检页底部的自定义 Skill 按钮。它们不会自己执行内容，而是把你写好的指令模板转交给 Claudian（realclaudian）插件。'
+			);
+			this.createNote(
+				sectionContent,
+				'需要用户临时输入内容时，请在模板里使用 {{input}}。如果你改了上面的日记 / Inbox / 项目等路径，这里的 {{daily_path}}、{{inbox_path}}、{{projects_path}} 也会自动跟着替换。',
+				'ad-settings-note-subtle'
+			);
+			this.createLucideNote(sectionContent);
 
 			this.plugin.settings.claudianActions.forEach((action, index) => {
-				const settingWrap = sectionContent.createDiv({ cls: 'ad-setting-action-item', attr: { style: 'border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 12px; position: relative;' } });
+				const settingWrap = sectionContent.createDiv({ cls: 'ad-setting-action-item' });
 				
 				// Label & Icon
 				new Setting(settingWrap)
@@ -353,7 +404,7 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 				// Require Input
 				new Setting(settingWrap)
 					.setName('开启独立输入框')
-					.setDesc('如果开启，按钮左侧会提供一个输入框以供用户临时填写参数。')
+					.setDesc('如果开启，按钮左侧会提供一个输入框，用于临时填写本次执行参数。')
 					.addToggle(toggle => toggle
 						.setValue(action.requireInput)
 						.onChange(async (val) => {
@@ -379,7 +430,7 @@ export class AgentDashboardSettingTab extends PluginSettingTab {
 				// Delete Button
 				new Setting(settingWrap)
 					.addButton(btn => btn
-						.setButtonText('删除此指令')
+						.setButtonText('删除此按钮')
 						.setWarning()
 						.onClick(async () => {
 							this.plugin.settings.claudianActions.splice(index, 1);

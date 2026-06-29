@@ -7,10 +7,6 @@ interface McpServerConfig {
 	headers?: Record<string, string>;
 }
 
-interface McpJsonConfig {
-	mcpServers?: Record<string, McpServerConfig>;
-}
-
 interface JsonRpcResponse {
 	jsonrpc: string;
 	id?: number;
@@ -36,22 +32,20 @@ export class McpService {
 	async executeRequest(serverName: string, method: string, params: unknown): Promise<unknown> {
 		const config = await this.loadServerConfig(serverName);
 		if (!config || config.type !== 'http' || !config.url) {
-			throw new Error(`MCP server "${serverName}" is not configured as an HTTP server in mcp.json.`);
+			throw new Error(`MCP server "${serverName}" is not configured as an HTTP server.`);
 		}
 
 		return this.executeDirectJsonRpc(config.url, config.headers || {}, method, params);
 	}
 
 	private async loadServerConfig(serverName: string): Promise<McpServerConfig | null> {
-		try {
-			const mcpFilePath = this.plugin.settings.mcpConfigPath;
-			if (await this.app.vault.adapter.exists(mcpFilePath)) {
-				const content = await this.app.vault.adapter.read(mcpFilePath);
-				const config = JSON.parse(content) as McpJsonConfig;
-				return config.mcpServers?.[serverName] || null;
-			}
-		} catch (error) {
-			console.error('Failed to read .claude/mcp.json:', error);
+		const ticktickConfig = this.plugin.settings.ticktickMcp;
+		if (serverName === ticktickConfig.serviceName && ticktickConfig.enabled) {
+			return {
+				type: ticktickConfig.type,
+				url: ticktickConfig.url,
+				headers: ticktickConfig.headers
+			};
 		}
 		return null;
 	}

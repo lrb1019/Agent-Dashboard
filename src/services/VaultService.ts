@@ -38,6 +38,85 @@ export class VaultService {
 		this.app = plugin.app;
 	}
 
+	private parseFrontmatterDate(value: unknown): number | null {
+		if (typeof value === 'number' && Number.isFinite(value)) {
+			return value;
+		}
+		if (typeof value === 'string' && value.trim() !== '') {
+			const parsed = new Date(value).getTime();
+			return Number.isNaN(parsed) ? null : parsed;
+		}
+		if (value instanceof Date) {
+			const parsed = value.getTime();
+			return Number.isNaN(parsed) ? null : parsed;
+		}
+		return null;
+	}
+
+	private parseDailyFilenameDate(file: TFile): number | null {
+		if (!file.path.startsWith(this.plugin.settings.dailyNoteFolder)) {
+			return null;
+		}
+		const match = file.basename.match(/^(\d{4})-?(\d{2})-?(\d{2})/);
+		if (!match) {
+			return null;
+		}
+		const [, year, month, day] = match;
+		if (!year || !month || !day) {
+			return null;
+		}
+		return new Date(Number(year), Number(month) - 1, Number(day)).getTime();
+	}
+
+	private formatLocalDate(ts: number): string {
+		const d = new Date(ts);
+		return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+	}
+
+	resolveLogicalCreatedAt(file: TFile): number {
+		const dailyDate = this.parseDailyFilenameDate(file);
+		if (dailyDate !== null) {
+			return dailyDate;
+		}
+
+		const cache = this.app.metadataCache.getFileCache(file);
+		const frontmatter = cache?.frontmatter as Record<string, unknown> | undefined;
+		const created = this.parseFrontmatterDate(frontmatter?.created);
+		if (created !== null) {
+			return created;
+		}
+
+		return file.stat.ctime;
+	}
+
+	resolveLastActivityAt(file: TFile): number {
+		return file.stat.mtime;
+	}
+
+	private resolveRepositoryCreatedAt(file: TFile): number {
+		return file.stat.ctime;
+	}
+
+	getVaultLifetimeDays(): number {
+		const files = this.app.vault.getMarkdownFiles().filter(file => !file.path.includes('.trash') && !file.path.startsWith('.'));
+		if (files.length === 0) {
+			return 0;
+		}
+
+		let earliest = Number.POSITIVE_INFINITY;
+		for (const file of files) {
+			const ts = this.resolveRepositoryCreatedAt(file);
+			if (ts < earliest) {
+				earliest = ts;
+			}
+		}
+
+		if (!Number.isFinite(earliest)) {
+			return 0;
+		}
+		return Math.max(1, Math.ceil((Date.now() - earliest) / 86400000));
+	}
+
 	/**
 	 * Scans the 02 Inbox/ directory to calculate backlog file count, age, and routing status
 	 */
@@ -57,8 +136,9 @@ export class VaultService {
 					if (file instanceof TFile && file.extension === 'md') {
 						count++;
 						filesList.push(file.path);
-						if (file.stat.ctime < oldestTime) {
-							oldestTime = file.stat.ctime;
+						const createdAt = this.resolveLogicalCreatedAt(file);
+						if (createdAt < oldestTime) {
+							oldestTime = createdAt;
 						}
 						// Check frontmatter routing indicators if necessary (mock check)
 						needRouting++;
@@ -163,8 +243,7 @@ export class VaultService {
 		try {
 			const files = this.app.vault.getMarkdownFiles();
 			files.forEach(file => {
-				const ctimeDate = new Date(file.stat.ctime);
-				const dateString = ctimeDate.toISOString().split('T')[0];
+				const dateString = this.formatLocalDate(this.resolveLogicalCreatedAt(file));
 				if (dateString) {
 					dateMap[dateString] = (dateMap[dateString] || 0) + 1;
 				}
@@ -237,28 +316,38 @@ export class VaultService {
 	}
 
 	/**
-	 * Calculates the number of empty markdown notes in the vault (excluding templates, dashboard, config)
+	 * Treats a note as empty when, after removing frontmatter and pure heading lines,
+	 * no body content remains.
+	 */
+	private isStructurallyEmptyMarkdown(content: string): boolean {
+		const withoutFrontmatter = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/u, '');
+		const withoutHeadings = withoutFrontmatter.replace(/^\s{0,3}#{1,6}\s+.*$/gmu, '');
+		return withoutHeadings.trim() === '';
+	}
+
+	async getEmptyNoteFiles(): Promise<TFile[]> {
+		const emptyFiles: TFile[] = [];
+		try {
+			const files = this.app.vault.getMarkdownFiles();
+			for (const file of files) {
+				const content = await this.app.vault.read(file);
+				if (this.isStructurallyEmptyMarkdown(content)) {
+					emptyFiles.push(file);
+				}
+			}
+		} catch (e) {
+			console.error('Failed to collect empty notes:', e);
+		}
+		return emptyFiles;
+	}
+
+	/**
+	 * Calculates the number of empty markdown notes across the vault.
 	 */
 	async getEmptyNotesCount(): Promise<{count: number, files: string[]}> {
 		try {
-			const files = this.app.vault.getMarkdownFiles();
-			let emptyCount = 0;
-			const emptyFilesList: string[] = [];
-			// Filter candidate files that are small (size < 300 bytes) to save I/O
-			const candidates = files.filter(file => 
-				file.stat.size < 300 &&
-				(file.path.startsWith(this.plugin.settings.atomicsFolder) || file.path.startsWith(this.plugin.settings.outputFolder) || file.path.startsWith(this.plugin.settings.inboxFolder))
-			);
-
-			for (const file of candidates) {
-				const content = await this.app.vault.read(file);
-				const cleanContent = content.replace(/---[\s\S]*?---/, '').trim();
-				if (cleanContent === '') {
-					emptyCount++;
-					emptyFilesList.push(file.path);
-				}
-			}
-			return { count: emptyCount, files: emptyFilesList };
+			const emptyFiles = await this.getEmptyNoteFiles();
+			return { count: emptyFiles.length, files: emptyFiles.map(file => file.path) };
 		} catch (e) {
 			console.error('Failed to calculate empty notes:', e);
 		}
@@ -295,9 +384,8 @@ export class VaultService {
 				if (targets) for (const t of Object.keys(targets)) linkedFiles.add(t);
 			}
 
-			const epochTime = new Date('2025-02-01').getTime();
 			const { dailyNoteFolder, inboxFolder, projectsFolder, atomicsFolder, outputFolder } = this.plugin.settings;
-			let oldestTime = Date.now();
+			let oldestTime = Number.POSITIVE_INFINITY;
 
 			for (const file of files) {
 				const path = file.path;
@@ -315,17 +403,15 @@ export class VaultService {
 					stats.countOrphans++;
 				}
 
-				// Use file.stat.ctime directly — already in memory, no I/O
-				const ts = file.stat.ctime;
-				if (ts >= epochTime && ts < oldestTime) oldestTime = ts;
+				const createdAt = this.resolveRepositoryCreatedAt(file);
+				if (createdAt < oldestTime) oldestTime = createdAt;
 
 				// Date bucket for chart
-				const d = new Date(ts);
-				const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+				const k = this.formatLocalDate(this.resolveLogicalCreatedAt(file));
 				dateCounts.set(k, (dateCounts.get(k) || 0) + 1);
 			}
 
-			if (oldestTime === Date.now()) oldestTime = epochTime;
+			if (!Number.isFinite(oldestTime)) oldestTime = Date.now();
 			stats.totalDays = Math.max(1, Math.ceil((Date.now() - oldestTime) / 86400000));
 			stats.dailyAvg = parseFloat((stats.totalMdFiles / stats.totalDays).toFixed(1));
 

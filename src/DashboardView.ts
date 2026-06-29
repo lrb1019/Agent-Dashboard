@@ -184,23 +184,13 @@ class LintModal extends Modal {
 							
 							void (async () => {
 								try {
-									const files = this.app.vault.getMarkdownFiles();
-									const candidates = files.filter(file => 
-										file.stat.size < 300 &&
-										!file.path.includes('templates') &&
-										!file.path.includes(this.app.vault.configDir) &&
-										!file.path.includes('Dashboard')
-									);
+									const candidates = await this.vaultService.getEmptyNoteFiles();
 									let cleanedCount = 0;
 									for (const file of candidates) {
-										const content = await this.app.vault.read(file);
-										const cleanContent = content.replace(/---[\s\S]*?---/, '').trim();
-										if (cleanContent === '') {
-											progressArea.createDiv({ text: `正在清理空笔记: ${file.name}` });
-											progressArea.scrollTop = progressArea.scrollHeight;
-											await this.app.fileManager.trashFile(file);
-											cleanedCount++;
-										}
+										progressArea.createDiv({ text: `正在清理空笔记: ${file.name}` });
+										progressArea.scrollTop = progressArea.scrollHeight;
+										await this.app.fileManager.trashFile(file);
+										cleanedCount++;
 									}
 									
 									progressArea.createDiv({ text: `========================================`, attr: { style: 'color: var(--text-success);' } });
@@ -410,6 +400,23 @@ export class AgentDashboardView extends ItemView {
 		this.vaultService = new VaultService(this.plugin);
 	}
 
+	private calculateLintHealthScore(scanData: ScanData): number {
+		const knowledgeCount = Math.max(
+			1,
+			this.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(this.plugin.settings.atomicsFolder)).length
+		);
+		const inboxDeduct = Math.min(25, scanData.inbox.count * 3);
+		const diaryDeduct = Math.min(20, scanData.uningested.count * 2);
+		const emptyDeduct = Math.min(15, scanData.empty.count * 2);
+		const orphanDeduct = Math.min(25, (scanData.orphans.count / knowledgeCount) * 50 + Math.min(10, scanData.orphans.count * 0.1));
+		const deadLinkDeduct = Math.min(15, Math.log10(scanData.deadLinks.count + 1) * 5);
+
+		let score = Math.round(100 - (inboxDeduct + diaryDeduct + emptyDeduct + orphanDeduct + deadLinkDeduct));
+		if (score < 0) score = 0;
+		if (score > 100) score = 100;
+		return score;
+	}
+
 	getViewType(): string {
 		return VIEW_TYPE_AGENT_DASHBOARD;
 	}
@@ -465,6 +472,38 @@ export class AgentDashboardView extends ItemView {
 		}, 300);
 	}
 
+	private formatTickTickSyncTime(timestamp: number | null): string {
+		if (!timestamp) {
+			return '尚未同步';
+		}
+
+		const syncMoment = moment(timestamp);
+		if (syncMoment.isSame(moment(), 'day')) {
+			return `今天 ${syncMoment.format('HH:mm')}`;
+		}
+		return syncMoment.format('MM/DD HH:mm');
+	}
+
+	private triggerTickTickSync(showNotice: boolean = true): void {
+		if (showNotice) {
+			new Notice('开始同步 TickTick 数据...');
+		}
+		const syncPromise = this.taskService.syncWithTickTick();
+		this.render();
+
+		void syncPromise.then(() => {
+			if (!showNotice) {
+				return;
+			}
+			const status = this.taskService.getSyncStatus();
+			if (status.state === 'error') {
+				new Notice(`同步失败: ${status.errorMessage || '未知错误'}`);
+			}
+		}).finally(() => {
+			this.render();
+		});
+	}
+
 	async onOpen(): Promise<void> {
 		await this.taskService.initialize();
 		this.registerEvent(this.app.vault.on('create', () => this.clearVaultStatsCache()));
@@ -473,9 +512,7 @@ export class AgentDashboardView extends ItemView {
 		this.render();
 		
 		if (this.activeMainTab === 'ticktick') {
-			void this.taskService.syncWithTickTick().then(() => {
-				this.render();
-			});
+			this.triggerTickTickSync(false);
 		}
 	}
 
@@ -524,8 +561,7 @@ export class AgentDashboardView extends ItemView {
 		
 		// 3. Right column: Metadata (uptime, version)
 		const rightCol = headerRow.createDiv({ attr: { style: 'display: flex; justify-content: flex-end; align-items: center; gap: 12px; flex: 1;' } });
-		const startDate = moment('2024-05-18');
-		const diffDays = moment().diff(startDate, 'days');
+		const diffDays = this.vaultService.getVaultLifetimeDays();
 		
 		rightCol.createDiv({ 
 			text: `SYS.v1.2.0 // UPTIME.${diffDays}d`, 
@@ -692,10 +728,7 @@ export class AgentDashboardView extends ItemView {
 				this.renderTabContent(contentWrapper);
 
 				if (this.activeMainTab === 'ticktick' && prevTab !== 'ticktick') {
-					void this.taskService.syncWithTickTick().then(() => {
-						contentWrapper.empty();
-						this.renderTabContent(contentWrapper);
-					});
+					this.triggerTickTickSync(false);
 				}
 			});
 		});
@@ -759,20 +792,50 @@ export class AgentDashboardView extends ItemView {
 			});
 		});
 
-		// Right actions: Refresh button (刷新)
+		const syncStatus = this.taskService.getSyncStatus();
+		const syncPalette = syncStatus.state === 'syncing'
+			? { dot: '#d97706', bg: 'rgba(217, 119, 6, 0.10)', text: '同步中' }
+			: syncStatus.state === 'error'
+				? { dot: '#dc2626', bg: 'rgba(220, 38, 38, 0.10)', text: '同步异常' }
+				: syncStatus.lastSyncedAt
+					? { dot: '#0f766e', bg: 'rgba(15, 118, 110, 0.10)', text: '已同步' }
+					: { dot: 'var(--text-muted)', bg: 'var(--background-secondary)', text: '未同步' };
+
+		// Right actions: Sync status + compact refresh entry
 		const rightActions = header.createDiv({ attr: { style: 'display: flex; align-items: center; gap: 12px;' } });
+		const syncBadge = rightActions.createDiv({
+			attr: {
+				style: `display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: ${syncPalette.bg}; color: var(--text-normal); font-size: 12px;`
+			}
+		});
+		syncBadge.createSpan({
+			attr: {
+				style: `width: 8px; height: 8px; border-radius: 999px; background: ${syncPalette.dot}; display: inline-block;`
+			}
+		});
+		const syncTextWrap = syncBadge.createDiv({ attr: { style: 'display: flex; flex-direction: column; gap: 1px;' } });
+		syncTextWrap.createSpan({ text: syncPalette.text, attr: { style: 'font-weight: 600; line-height: 1.1;' } });
+		syncTextWrap.createSpan({
+			text: syncStatus.state === 'syncing'
+				? '正在拉取最新 TickTick 数据'
+				: syncStatus.state === 'error'
+					? (syncStatus.errorMessage || '同步失败，请检查配置')
+					: `上次同步: ${this.formatTickTickSyncTime(syncStatus.lastSyncedAt)}`,
+			attr: { style: 'font-size: 11px; color: var(--text-muted); line-height: 1.1;' }
+		});
+
 		const refreshBtn = rightActions.createEl('button', {
-			text: '刷新',
-			cls: 'ad-btn ad-btn-primary',
-			attr: { style: 'font-size: 13px; padding: 4px 16px;' }
+			attr: {
+				title: '手动同步 TickTick',
+				style: `background: transparent; box-shadow: none; padding: 6px; display: flex; align-items: center; justify-content: center; cursor: ${syncStatus.state === 'syncing' ? 'default' : 'pointer'}; color: var(--text-muted); border: none; opacity: ${syncStatus.state === 'syncing' ? '0.45' : '1'};`
+			}
 		});
-		refreshBtn.addEventListener('click', () => {
-			new Notice('开始同步 TickTick 数据...');
-			void this.taskService.syncWithTickTick().then(() => {
-				new Notice('同步完成！');
-				this.render();
+		setIcon(refreshBtn, 'refresh-cw');
+		if (syncStatus.state !== 'syncing') {
+			refreshBtn.addEventListener('click', () => {
+				this.triggerTickTickSync();
 			});
-		});
+		}
 
 		// 2. Render content
 		const container = wrapper.createDiv({ attr: { style: 'flex-grow: 1; display: flex; flex-direction: column; gap: 20px;' } });
@@ -2048,6 +2111,20 @@ export class AgentDashboardView extends ItemView {
 		
 		this.renderStatsNav(container);
 
+		if (!this.cachedDateCounts) {
+			this.getVaultDateCounts();
+		} else if (!this.cachedVaultOverviewStats) {
+			this.cachedVaultOverviewStats = this.vaultService.getVaultOverviewStats();
+		}
+
+		const finalStats = this.cachedVaultOverviewStats!;
+		this.renderVaultTelemetryBar(container, finalStats);
+
+		const finalMiniGridContainer = container.createDiv();
+		this.renderMiniGrid(finalMiniGridContainer, finalStats);
+		this.renderChartSection(container);
+		return;
+
 		// 1. Telemetry bar card container (rendered immediately)
 		const telemetryCard = container.createDiv({ cls: 'ad-card ad-tech-card ad-vault-telemetry-card' });
 		const barContainer = telemetryCard.createDiv({ cls: 'ad-vault-telemetry-bar' });
@@ -2541,6 +2618,10 @@ export class AgentDashboardView extends ItemView {
 
 		const leftCard = grid.createDiv({ cls: 'ad-card ad-tech-card', attr: { style: 'text-align: center; display: flex; flex-direction: column; justify-content: space-between; padding: 16px; min-height: 320px;' } });
 		leftCard.createEl('h3', { text: '仓库健康度', attr: { style: 'margin: 0; text-align: left; align-self: flex-start; width: 100%;' } });
+		leftCard.createEl('p', {
+			text: `基于 Inbox、日记待入库、知识笔记死链/孤儿和全库空白笔记综合评估`,
+			attr: { style: 'margin: 6px 0 0 0; font-size: 11px; color: var(--text-muted); text-align: left; width: 100%;' }
+		});
 
 		const ringContainer = leftCard.createDiv({ cls: 'ad-progress-ring-container', attr: { style: 'margin: 15px auto; position: relative; width: 120px; height: 120px; display: flex; align-items: center; justify-content: center;' } });
 		const svg = ringContainer.createSvg('svg', { cls: 'ad-progress-ring', attr: { width: '120', height: '120', style: 'position: absolute; top: 0; left: 0; transform: rotate(-90deg);' } });
@@ -2709,18 +2790,8 @@ export class AgentDashboardView extends ItemView {
 					this.vaultService.getUningestedDiariesCount(),
 					this.vaultService.getEmptyNotesCount()
 				]).then(([inbox, orphans, deadLinks, uningested, empty]) => {
-					// Non-linear health evaluation formula
 					this.currentScanData = { inbox, orphans, deadLinks, uningested, empty };
-					const totalMarkdownFiles = this.app.vault.getMarkdownFiles().length || 1;
-					const inboxDeduct = Math.min(25, inbox.count * 3);
-					const diaryDeduct = Math.min(20, uningested.count * 2);
-					const emptyDeduct = Math.min(15, empty.count * 2);
-					const orphanDeduct = Math.min(25, (orphans.count / totalMarkdownFiles) * 50 + Math.min(10, orphans.count * 0.1));
-					const deadLinkDeduct = Math.min(15, Math.log10(deadLinks.count + 1) * 5);
-					
-					let score = Math.round(100 - (inboxDeduct + diaryDeduct + emptyDeduct + orphanDeduct + deadLinkDeduct));
-					if (score < 0) score = 0;
-					if (score > 100) score = 100;
+					const score = this.calculateLintHealthScore(this.currentScanData);
 
 					const strokeDashoffset = 282.7 - (score / 100) * 282.7;
 					progressCircle.setAttribute('stroke-dashoffset', String(strokeDashoffset));
@@ -2737,11 +2808,11 @@ export class AgentDashboardView extends ItemView {
 						statusText.setCssStyles({ color: 'var(--text-error)' });
 					}
 
-					inboxDesc.setText(`当前积压: ${inbox.count} 篇 最久: ${inbox.oldestDays} 天`);
-					diaryDesc.setText(`发现 ${uningested.count} 篇未入库`);
-					orphanDesc.setText(`发现 ${orphans.count} 篇没有引用的孤立笔记`);
-					deadLinkDesc.setText(`发现 ${deadLinks.count} 处指向不存在文件的链接`);
-					emptyNoteDesc.setText(`发现 ${empty.count} 篇正文为空的笔记`);
+					inboxDesc.setText(`范围: ${this.plugin.settings.inboxFolder} | ${inbox.count} 篇 | 最久 ${inbox.oldestDays} 天`);
+					diaryDesc.setText(`范围: ${this.plugin.settings.dailyNoteFolder} | ${uningested.count} 篇未入库`);
+					orphanDesc.setText(`范围: ${this.plugin.settings.atomicsFolder} | ${orphans.count} 篇未被知识链路引用`);
+					deadLinkDesc.setText(`范围: ${this.plugin.settings.atomicsFolder} | ${deadLinks.count} 处失效链接`);
+					emptyNoteDesc.setText(`范围: 全库 Markdown | ${empty.count} 篇正文为空`);
 					
 					// Dynamic Border Colors
 					inboxItem.style.border = inbox.count > 0 ? '1px solid var(--text-success)' : '1px dashed var(--background-modifier-border)';
@@ -2788,16 +2859,7 @@ export class AgentDashboardView extends ItemView {
 			const deadLinks = await this.vaultService.getDeadLinkCount();
 			const empty = await this.vaultService.getEmptyNotesCount();
 			
-			const totalMarkdownFiles = this.app.vault.getMarkdownFiles().length || 1;
-			const inboxDeduct = Math.min(25, inbox.count * 3);
-			const diaryDeduct = Math.min(20, uningested.count * 2);
-			const emptyDeduct = Math.min(15, empty.count * 2);
-			const orphanDeduct = Math.min(25, (orphans.count / totalMarkdownFiles) * 50 + Math.min(10, orphans.count * 0.1));
-			const deadLinkDeduct = Math.min(15, Math.log10(deadLinks.count + 1) * 5);
-			
-			let score = Math.round(100 - (inboxDeduct + diaryDeduct + emptyDeduct + orphanDeduct + deadLinkDeduct));
-			if (score < 0) score = 0;
-			if (score > 100) score = 100;
+			const score = this.calculateLintHealthScore({ inbox, orphans, deadLinks, uningested, empty });
 
 			const content = `---
 created: ${moment().format('YYYY-MM-DD')}
@@ -2945,21 +3007,6 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 		select.addEventListener('change', () => {
 			this.selectedProjectId = select.value;
 			this.render();
-		});
-
-		const refreshBtn = headerRight.createEl('button', { attr: { title: '手动同步 TickTick', style: 'background: transparent; box-shadow: none; padding: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-muted); border: none;' } });
-		setIcon(refreshBtn, 'refresh-cw');
-		refreshBtn.addEventListener('click', () => {
-			new Notice('开始同步 TickTick 数据...');
-			refreshBtn.setCssStyles({ opacity: '0.5', pointerEvents: 'none' });
-			
-			void this.taskService.syncWithTickTick().then(() => {
-				new Notice('TickTick 同步完成！');
-				this.render();
-			}).catch(e => {
-				new Notice('同步失败: ' + String(e));
-				refreshBtn.setCssStyles({ opacity: '1', pointerEvents: 'auto' });
-			});
 		});
 		
 		const taskList = todayCard.createDiv({ cls: 'ad-task-list' });
@@ -3225,7 +3272,7 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 				
 				void (async () => {
 					try {
-						const res = (await this.taskService.mcpService.executeRequest(this.plugin.settings.ticktickServiceName, 'tools/call', {
+						const res = (await this.taskService.mcpService.executeRequest(this.plugin.settings.ticktickMcp.serviceName, 'tools/call', {
 							name: toolName,
 							arguments: {}
 						})) as McpCallResult;
@@ -3510,6 +3557,7 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 		});
 		
 		const tabsContainer = navWrap.createDiv({ cls: 'jarvis-stats-nav-tabs' });
+		tabsContainer.setAttr('style', 'display: flex; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 3px; gap: 4px;');
 		const tabs = [
 			{ id: 'week', label: '周' },
 			{ id: 'month', label: '月' },
@@ -3518,10 +3566,26 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 		];
 		
 		tabs.forEach(t => {
+			const isActive = this.statsTab === t.id;
 			const btn = tabsContainer.createEl('button', {
 				text: t.label,
-				cls: `jarvis-stats-tab-btn ${this.statsTab === t.id ? 'is-active' : ''}`
+				cls: `jarvis-stats-tab-btn ${isActive ? 'is-active' : ''}`
 			});
+			btn.setAttr('style', [
+				'background: transparent',
+				'border: none',
+				'outline: none',
+				'padding: 4px 14px',
+				'font-size: 13px',
+				'font-weight: 500',
+				'line-height: 1.2',
+				'border-radius: 999px',
+				'cursor: pointer',
+				'box-shadow: none',
+				isActive
+					? 'background-color: var(--interactive-accent); color: var(--text-on-accent);'
+					: 'color: var(--text-muted);'
+			].join('; '));
 			btn.addEventListener('click', () => {
 				this.statsTab = t.id as 'week' | 'month' | 'year' | 'all';
 				this.currentDateOffset = 0;
@@ -3535,8 +3599,10 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 
 		if (this.statsTab !== 'all') {
 			const picker = navWrap.createDiv({ cls: 'jarvis-stats-date-picker' });
+			picker.setAttr('style', 'padding: 0 4px; border-radius: 999px; border: 1px solid var(--background-modifier-border); display: flex; align-items: center; height: 32px; background: var(--background-primary);');
 			
 			const prevBtn = picker.createEl('button', { cls: 'jarvis-stats-date-btn' });
+			prevBtn.setAttr('style', 'background: transparent; border: none; box-shadow: none; padding: 0; margin: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-muted);');
 			setIcon(prevBtn, 'chevron-left');
 			prevBtn.addEventListener('click', () => {
 				this.currentDateOffset--;
@@ -3544,9 +3610,11 @@ ${score >= 90 ? '- 知识库健康状况良好，保持常规读写即可。' : 
 			});
 
 			const dateStr = this.calculateDateRangeString();
-			picker.createEl('span', { text: dateStr, cls: 'jarvis-stats-date-text' });
+			const dateText = picker.createEl('span', { text: dateStr, cls: 'jarvis-stats-date-text' });
+			dateText.setAttr('style', 'font-size: 14px; font-weight: 500; line-height: 1; margin: 0 6px; color: var(--text-normal);');
 
 			const nextBtn = picker.createEl('button', { cls: 'jarvis-stats-date-btn' });
+			nextBtn.setAttr('style', 'background: transparent; border: none; box-shadow: none; padding: 0; margin: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-muted);');
 			setIcon(nextBtn, 'chevron-right');
 			nextBtn.addEventListener('click', () => {
 				this.currentDateOffset++;

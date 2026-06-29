@@ -1,4 +1,4 @@
-import { App, TFile, moment } from 'obsidian';
+import { App, TFile, TFolder, moment } from 'obsidian';
 import AgentDashboardPlugin from '../main';
 
 export interface DiaryInfo {
@@ -46,7 +46,7 @@ interface TemplaterPlugin {
 	templater?: {
 		create_new_note_from_template?: (
 			templateFile: TFile,
-			folderObj: TFile,
+			folderObj: TFolder,
 			baseName: string,
 			open: boolean
 		) => Promise<unknown>;
@@ -84,6 +84,38 @@ export class DiaryService {
 	constructor(plugin: AgentDashboardPlugin) {
 		this.plugin = plugin;
 		this.app = plugin.app;
+	}
+
+	private parseDiaryDateFromFilename(file: TFile): string | null {
+		const match = file.basename.match(/^(\d{4})-?(\d{2})-?(\d{2})/);
+		if (!match) {
+			return null;
+		}
+		const [, year, month, day] = match;
+		if (!year || !month || !day) {
+			return null;
+		}
+		return `${year}-${month}-${day}`;
+	}
+
+	private resolveDiaryDayString(file: TFile): string {
+		const fileNameDate = this.parseDiaryDateFromFilename(file);
+		if (fileNameDate) {
+			return fileNameDate;
+		}
+
+		const cache = this.app.metadataCache.getFileCache(file);
+		const rawFm: unknown = cache?.frontmatter;
+		const frontmatter = rawFm as Record<string, unknown> | undefined;
+		const createdVal = frontmatter?.created;
+		if (createdVal && (typeof createdVal === 'string' || typeof createdVal === 'number' || createdVal instanceof Date)) {
+			const parsed = moment(createdVal);
+			if (parsed.isValid()) {
+				return parsed.format('YYYY-MM-DD');
+			}
+		}
+
+		return moment(file.stat.ctime).format('YYYY-MM-DD');
 	}
 
 	/**
@@ -196,11 +228,11 @@ export class DiaryService {
 			}
 		}
 		
-		const folderObj = this.app.vault.getAbstractFileByPath(folderPath);
-		if (!(folderObj instanceof TFile)) {
-			if (!folderObj) {
-				throw new Error(`Failed to resolve target folder: ${folderPath}`);
-			}
+		const folderObj = folderPath && folderPath !== '/'
+			? this.app.vault.getAbstractFileByPath(folderPath)
+			: this.app.vault.getRoot();
+		if (!(folderObj instanceof TFolder)) {
+			throw new Error(`Failed to resolve target folder: ${folderPath}`);
 		}
 		
 		const config = this.getNavigatorSettings();
@@ -219,7 +251,7 @@ export class DiaryService {
 		// Attempt to use Templater plugin if active
 		const appWithPlugins = this.app as unknown as ObsidianAppWithPlugins;
 		const templaterPlugin = appWithPlugins.plugins.getPlugin("templater-obsidian") as TemplaterPlugin | undefined;
-		if (templaterPlugin && templaterPlugin.templater && typeof templaterPlugin.templater.create_new_note_from_template === 'function' && templateFile && folderObj instanceof TFile) {
+		if (templaterPlugin && templaterPlugin.templater && typeof templaterPlugin.templater.create_new_note_from_template === 'function' && templateFile) {
 			try {
 				const createdFile = await templaterPlugin.templater.create_new_note_from_template(templateFile, folderObj, baseName, false);
 				if (createdFile instanceof TFile) {
@@ -276,7 +308,8 @@ export class DiaryService {
 	}
 
 	async getDiaryStats(): Promise<DiaryStats> {
-		const files = this.app.vault.getMarkdownFiles();
+		const diaryRoot = this.plugin.settings.dailyNoteFolder;
+		const files = this.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(diaryRoot));
 		const stats: DiaryStats = {
 			totalDiaries: 0,
 			totalWeeklies: 0,
@@ -291,7 +324,6 @@ export class DiaryService {
 		const dayDates: string[] = [];
 
 		for (const f of files) {
-			const path = f.path;
 			const name = f.basename;
 			
 			// Count total words roughly based on file size (assuming ~3 bytes per Chinese char, or mixed text)
@@ -308,20 +340,10 @@ export class DiaryService {
 				stats.totalYearlies++;
 			} else if (name.match(/^\d{4}-?\d{2}-?\d{2}/) || name.includes('日记')) {
 				stats.totalDiaries++;
-				const match = name.match(/^(\d{4})-?(\d{2})-?(\d{2})/);
-				if (match) {
-					dayDates.push(`${match[1]}-${match[2]}-${match[3]}`);
-				}
-			} else if (path.includes(this.plugin.settings.dailyNoteFolder)) {
+				dayDates.push(this.resolveDiaryDayString(f));
+			} else {
 				stats.totalDiaries++;
-				const cache = this.app.metadataCache.getFileCache(f);
-				const rawFm: unknown = cache?.frontmatter;
-				const frontmatter = rawFm as Record<string, unknown> | undefined;
-				const createdVal = frontmatter?.created;
-				if (createdVal && (typeof createdVal === 'string' || typeof createdVal === 'number' || createdVal instanceof Date)) {
-					const parsed = moment(createdVal);
-					if (parsed.isValid()) dayDates.push(parsed.format('YYYY-MM-DD'));
-				}
+				dayDates.push(this.resolveDiaryDayString(f));
 			}
 		}
 
